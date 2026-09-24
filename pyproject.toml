@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "skb-arrow"
+version = "0.1.0"
+description = "Process host exposing scikit-bio to non-Python callers over Arrow"
+readme = "README.md"
+license = "BSD-3-Clause"
+requires-python = ">=3.14"
+authors = [{ name = "Daniel McDonald", email = "damcdonald@ucsd.edu" }]
+dependencies = []
+
+[project.scripts]
+skb-arrow = "skb_arrow.cli:main"
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "ruff==0.16.8", "mypy==2.3.1"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "N", "C4", "SIM"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
