@@ -1,6 +1,6 @@
 # skb-arrow — Design
 
-**Status:** design accepted, implementation not started.
+**Status:** M1 (foundation) complete; M2 next.
 **Scope of this document:** skb-arrow only. The duckdb-miint integration (C++ submit
 framework, `install_skb_arrow()`, SQL wrappers) is deliberately out of scope and gets its
 own plan in that repository. **The protocol specification in this repo is the contract
@@ -330,33 +330,4 @@ docstrings describe). Independent skbio pinning is exactly why this repo is sepa
 
 ## 6. Working agreement
 
-**These rules apply to every milestone and every phase. They persist across context clears and
-across sessions. If you are resuming with no memory of prior work, these still bind.**
-
-1. **Red/green/refactor TDD.** Write the failing test first and *see it fail for the intended
-   reason*. Then make it pass. Then refactor. A test that cannot fail when the logic changes is
-   not a test — name the input class that breaks each assertion.
-2. **Self-triggered code review.** Run `/code-review` at each phase boundary and at any point
-   the change grows beyond what was planned. Present findings and **stop** — do not fix
-   anything until the findings are acknowledged.
-3. **Stop and summarize at every phase completion.** State what was done, what is verified, what
-   remains, and **every deviation from the plan** and why. Do not begin the next phase in the
-   same breath.
-4. **Fail loud.** "Complete" is false if anything was skipped, commented out, or silently
-   xfail'd. Surface uncertainty rather than hiding it.
-5. **Simplicity first.** Minimum code that solves the problem. No speculative abstraction, no
-   abstraction for single-use code.
-   **Tight code, succinct prose.** Comments say only what the code cannot — why, not what.
-   Docs are terse and scannable. No narration, no restating signatures, no filler.
-6. **Surgical changes.** Touch only what the task requires. Do not improve adjacent code.
-7. **Read before writing.** Read the layer's existing contracts and callers first. If existing
-   structure is puzzling, ask rather than guess.
-8. **Respect the layering** in §2. A capability that reaches into transport or JSON is a
-   design regression, not a shortcut.
-9. **Never `rm` without permission.** Never `git add -A`, `git add .`, or `git commit -a` —
-   stage explicit paths, always.
-10. **Surface conflicts, don't average them.** If two patterns contradict, pick the more recent
-    or better-tested one, say why, and flag the other.
-
-Design decisions in §3 are settled. Reopen one only with new evidence, and record the evidence
-here when you do.
+Moved to [`CLAUDE.md`](../CLAUDE.md), the authoritative copy.
