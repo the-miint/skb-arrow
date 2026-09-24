@@ -7,7 +7,7 @@ from skb_arrow.protocol import PROTOCOL_VERSION
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="skb-arrow")
+    parser = argparse.ArgumentParser(prog="skb-arrow", color=False)
     parser.add_argument(
         "--version", action="store_true", help="print version, protocol, capabilities"
     )

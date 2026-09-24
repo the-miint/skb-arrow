@@ -8,7 +8,8 @@ import pytest
 from skb_arrow import cli, registry
 
 PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
-VERSION = tomllib.loads(PYPROJECT.read_text())["project"]["version"]
+with PYPROJECT.open("rb") as f:
+    VERSION = tomllib.load(f)["project"]["version"]
 # Protocol is pinned literally: bumping it must be a deliberate test edit.
 EXPECTED = f"skb-arrow {VERSION}\nprotocol 1\ncapabilities: none\n"
 
@@ -31,11 +32,20 @@ def test_version_lists_capabilities_sorted_regardless_of_registration_order(
 
 def test_installed_console_script_runs_main() -> None:
     script = Path(sys.executable).parent / "skb-arrow"
-    result = subprocess.run([script, "--version"], capture_output=True, text=True)
+    result = subprocess.run(
+        [script, "--version"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
     assert result.returncode == 0
     assert result.stdout == EXPECTED
 
 
-def test_bare_invocation_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
+def test_bare_invocation_is_a_usage_error_without_ansi(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FORCE_COLOR", "1")
     assert cli.main([]) == 2
     assert capsys.readouterr().err.startswith("usage: skb-arrow")
