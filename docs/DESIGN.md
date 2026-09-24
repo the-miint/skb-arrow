@@ -346,6 +346,8 @@ across sessions. If you are resuming with no memory of prior work, these still b
    xfail'd. Surface uncertainty rather than hiding it.
 5. **Simplicity first.** Minimum code that solves the problem. No speculative abstraction, no
    abstraction for single-use code.
+   **Tight code, succinct prose.** Comments say only what the code cannot — why, not what.
+   Docs are terse and scannable. No narration, no restating signatures, no filler.
 6. **Surgical changes.** Touch only what the task requires. Do not improve adjacent code.
 7. **Read before writing.** Read the layer's existing contracts and callers first. If existing
    structure is puzzling, ask rather than guess.
