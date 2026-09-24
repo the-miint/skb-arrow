@@ -2,12 +2,13 @@
 
 skb-arrow is a process host exposing scikit-bio to non-Python callers over Arrow.
 [`docs/DESIGN.md`](docs/DESIGN.md) holds the design, decision log (§3), and milestones (§5).
-Decisions in §3 are settled: reopen one only with new evidence, and record it there.
+Rules live in `docs/` (below); DESIGN holds the reasons and evidence. Decisions in §3 are
+settled: reopen one only with new evidence, and record it there.
 
 ## Hard requirements
 - Never `rm` without permission.
 - Never `git add -A`, `git add .`, or `git commit -a`. Stage explicit paths.
-- Never change a test's expected value without permission.
+- Never change a failing test's expected value without permission.
 
 ## Priorities
 1. Red/green/refactor TDD
@@ -47,12 +48,15 @@ memory of prior work.
 
 ## Commands
 ```
-uv sync                                          # env + editable install
-uv run pytest
-uv run ruff check && uv run ruff format --check
-uv run mypy
-git config core.hooksPath .githooks              # pre-commit = the CI gate
+.githooks/pre-commit                             # full gate, exactly as CI runs it
+uv sync --locked
+uv run --locked pytest
+uv run --locked ruff check
+uv run --locked ruff format --check
+uv run --locked mypy
+git config core.hooksPath .githooks              # run the gate on every commit
 ```
+Always `--locked`: without it uv silently rewrites `uv.lock`.
 
 ## Docs
 Read on demand.

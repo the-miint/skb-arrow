@@ -10,12 +10,15 @@ generic call path (DESIGN §1).
   Raise ordinary exceptions; [`errors.md`](errors.md) classifies them.
 - Declares a `schema_version`, bumped on any output schema change.
 
-## Seeds (DESIGN §3.7)
-Every stochastic capability takes an integer `seed`. Omitted means a fixed default, never
-nondeterminism. Only the integer crosses the boundary, so results won't match a Python script
-that threads one `Generator` through several calls.
+## Seeds
+Why: DESIGN §3.7.
 
-## Result shapes (DESIGN §3.10)
+Every stochastic capability takes an integer `seed`. Omitted means a fixed default, never
+nondeterminism. No `Generator` crosses the boundary.
+
+## Result shapes
+Why: DESIGN §3.10.
+
 Where scikit-bio returns several related frames, return one long table with a discriminator
 column. Differential abundance:
 
@@ -29,5 +32,11 @@ column. Differential abundance:
 A per-family rule, not a global one: other capabilities may return a single narrow table.
 
 ## Registry
-`CAPABILITIES` in `src/skb_arrow/registry.py` maps name → `schema_version`. Empty until M3,
-which also defines the registration template and param spec.
+`CAPABILITIES` in `src/skb_arrow/registry.py` maps name → `schema_version`. Empty in M1. M2
+adds `echo`, which exists only to exercise the machinery; M3 adds `ancombc` and defines the
+registration template and param spec.
+
+## Open (M3)
+- `schema_version` covers only the output schema. Changing a param default — including the
+  default seed — changes answers without a version bump. Decide whether param specs are
+  versioned.

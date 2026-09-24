@@ -57,18 +57,9 @@ caller was evaluated and rejected — see §3.1.
                                           scikit-bio + numpy/scipy
 ```
 
-Four internal layers, each independently testable:
-
-| Layer | Responsibility | Must not know about |
-|---|---|---|
-| `transport` | mmap'd segments, chunking, Arrow IPC encode/decode, unlink-after-open | capabilities, scikit-bio |
-| `protocol` | request/response envelopes, init handshake, versioning, error taxonomy | scikit-bio |
-| `registry` | capability declaration, param validation, schema versions | transport details |
-| `capabilities` | one module per scikit-bio capability | transport, JSON |
-
-The layering rule is the main maintainability lever: **a capability author writes a function
-that takes typed params plus an Arrow table and returns an Arrow table.** They touch no
-transport, no JSON, no error mapping.
+Four internal layers, each independently testable; table and layering rule in
+[`architecture.md`](architecture.md). The layering is the main maintainability lever: a
+capability author writes one function and touches no transport, no JSON, no error mapping.
 
 ---
 
@@ -125,13 +116,18 @@ Memory-mapped files instead:
 - **No doubling.** A 2 GiB payload consumed **2062 MB total** on Linux; 1024 MB consumed
   900 MB on macOS. RSS *looks* doubled because it counts the same physical pages the page
   cache already holds — `MemAvailable` is the honest number.
-- **Cleanup is crash-proof with no registry.** Both sides open, the consumer `unlink`s
-  immediately, the kernel reclaims on last close. Verified valid-after-unlink on ext4, tmpfs,
-  and APFS. This removes gpl-boundary's signal-safe cleanup registry and PID sweeping
-  entirely — which matters because Python signal handlers are not async-signal-safe.
+- **Cleanup of opened segments is crash-proof with no registry.** Both sides open, the
+  consumer `unlink`s immediately, the kernel reclaims on last close. Verified
+  valid-after-unlink on ext4, tmpfs, and APFS. This removes gpl-boundary's signal-safe
+  cleanup registry and PID sweeping entirely — which matters because Python signal handlers
+  are not async-signal-safe.
 
-Placement: `/dev/shm` on Linux (tmpfs, RAM-backed, ordinary file semantics), `TMPDIR` on
-macOS. Overridable.
+**Known gap** (M1 review): a segment its consumer never opens is never reclaimed — the host
+killed after writing a response, or a request rejected before its segments are opened. M2 must
+close it; see [`transport.md`](transport.md#open).
+
+Placement rules: [`transport.md`](transport.md). Linux uses tmpfs: RAM-backed, ordinary file
+semantics.
 
 **Known cost:** on macOS a 1024 MB cold read took **1689.6 ms** versus 63.5 ms at 512 MB — a
 26× nonlinear jump once the payload exceeded available cache (8.4 GB free of 36 GB). Warm
@@ -148,53 +144,33 @@ distance matrix is O(n²) and may be the largest object in play. Revisit only wi
 
 ### 3.4 Chunked payloads from the start
 
-A request carries a **list** of mapped segments, each holding Arrow IPC record batches, sized
-under a policy cap. Arrow IPC streams are already multi-batch, so this is natural rather than
+Payloads are lists of size-capped segments ([`transport.md`](transport.md)) from protocol
+version 1. Arrow IPC streams are already multi-batch, so this is natural rather than
 bolted on, and it avoids the §3.2 macOS cliff by construction instead of requiring a breaking
 protocol bump later.
 
 ### 3.5 Errors are one general mechanism
 
-Never per-capability. The host always returns a structured envelope with a `kind`; the caller
-maps `kind` to its own error type once.
-
-| `kind` | Cause | Traceback? |
-|---|---|---|
-| `host_incompatible` | protocol or capability schema drift | no |
-| `invalid_input` | scikit-bio data validation, `LinAlgError` | no |
-| `invalid_param` | bad formula, unknown method, out-of-range value | no |
-| `unsupported` | capability needs an extra that is not installed | no |
-| `resource` | `MemoryError` | no |
-| `internal` | anything unclassified — a bug | **yes** |
-
-Classification is a single exception-type table, roughly: `ValueError`/`TypeError`/`LinAlgError`
-→ `invalid_input`; `KeyError`/`PatsyError` → `invalid_param`; `MemoryError` → `resource`;
-`ImportError` → `unsupported`; else `internal`. This works because scikit-bio validates
-pervasively through `ValueError`.
-
-Two durability rules:
-1. **Unknown `kind` must map to `internal` on the caller side**, so a newer host can add kinds
-   without breaking an older caller.
-2. **Only `internal` carries a traceback.** Every other kind must be actionable without one.
-
-`cancelled` is deliberately absent: the caller kills the host, so the host cannot report it.
+Never per-capability: the caller maps `kind` to its own error type once. A single
+exception-type table suffices because scikit-bio validates pervasively through `ValueError`.
+Two durability rules keep it stable across versions — unknown kinds degrade, and only bugs
+carry tracebacks — and `cancelled` is absent because the host is killed, not asked (§3.8).
+Kinds, classifier, and rules: [`errors.md`](errors.md).
 
 ### 3.6 Warnings are collected, always
 
-Every capability call is wrapped in `warnings.catch_warnings(record=True)`. Successful
-responses carry `warnings: [{category, message, count}]`, deduplicated and capped — pandas
-`FutureWarning`s and numba performance warnings can flood. The caller decides where they go
-(miint routes them to `miint_warnings()`).
+Warnings are returned, not printed, so the caller decides where they go (miint routes them to
+`miint_warnings()`). They are deduplicated and capped because pandas `FutureWarning`s and numba
+performance warnings can flood. Spec: [`errors.md`](errors.md#warnings).
 
 ### 3.7 Seeds: reproducible by default
 
-scikit-bio has a uniform `seed=` convention via `get_rng()`. Every stochastic capability
-exposes `seed`, and **omitting it yields a fixed default, not nondeterminism** — the same
-request must return the same answer.
+scikit-bio's uniform `seed=` convention (via `get_rng()`) makes this cheap. Reproducible by
+default because a declarative caller expects the same request to return the same answer.
 
-Documented divergence: statelessness means only an integer seed crosses the boundary, never a
-shared `Generator`. Results therefore will not match a Python script that threads one RNG
-through several calls. For a declarative caller this is the better semantic.
+Documented divergence: statelessness means only an integer crosses the boundary, so results
+will not match a Python script that threads one RNG through several calls. For a declarative
+caller this is the better semantic. Rules: [`capabilities.md`](capabilities.md#seeds).
 
 ### 3.8 Cancellation: the caller kills the process
 
@@ -223,36 +199,20 @@ changes no architecture.
 
 ### 3.10 Result shapes: unify a family into one long table
 
-Where scikit-bio returns several related frames, return **one table with a discriminator
-column** rather than multiple outputs. For the differential-abundance family:
-
-`feature_id, test, term, lfc, se, w, pvalue, qvalue, signif`
-
-- `test` ∈ `{main, global, dunnett, pairwise, trend}`
-- `term` carries Covariate or Comparison; NULL where not applicable
-- `lfc`/`se` NULL for `global`/`trend`
-
-This covers `ancombc`'s two frames today and extends to `ancombc2`'s post-hoc tests without a
-new shape. Documented wrinkle: `w` is a z-statistic under `main` but chi-square/F under
-`global`. Consumers filter by `test`; the R package has the same property.
-
-This is a per-family judgement, not a global rule. Other capabilities may legitimately return
-a single narrow table.
+One table with a discriminator column, rather than multiple outputs, where scikit-bio returns
+several related frames. For differential abundance this covers `ancombc`'s two frames today
+and extends to `ancombc2`'s post-hoc tests without a new shape. The one wrinkle — `w` changes
+meaning with `test` — is accepted: the R package has the same property. A per-family
+judgement, not a global rule. Schema: [`capabilities.md`](capabilities.md#result-shapes).
 
 ---
 
 ## 4. Versioning and compatibility
 
-Adopted from gpl-boundary, which got this right:
-
-- **`protocol_version`** — integer, bumped on any wire-format change. The init handshake
-  rejects drift immediately rather than producing garbled batches later.
-- **Per-capability `schema_version`** — advertised in the init reply's capability registry, so
-  a caller can refuse to bind a capability whose output schema it does not understand.
-- **Minimum-version gating** — a caller may require a floor and fail fast with an actionable
-  message.
-- Unknown fields in requests are ignored; unknown error `kind`s degrade to `internal`. Both
-  directions stay forward-compatible.
+Adopted from gpl-boundary, which got this right: an integer `protocol_version` checked at the
+init handshake, so drift fails immediately rather than as garbled batches later; a
+per-capability `schema_version`; minimum-version gating; and forward-compatible handling of
+unknowns in both directions. Rules: [`protocol.md`](protocol.md#versioning).
 
 ---
 
@@ -268,7 +228,8 @@ Repository, tooling, CI, and the documents that make later milestones cheap.
 - `docs/`: `architecture.md`, `protocol.md`, `transport.md`, `capabilities.md`, `errors.md`,
   referenced from `CLAUDE.md` so they load on demand instead of occupying context
 - GitHub Actions: lint, format, type check, pytest — matrix **{linux-x86_64, macos-arm64} × 3.14**
-- Release workflow skeleton for PyPI trusted publishing (not yet publishing)
+- Release workflow for PyPI trusted publishing; publishes only on a non-prerelease GitHub
+  release, and none is cut before M5
 - `skb-arrow --version` reporting protocol version and an empty capability registry
 
 **Done when:** CI green on both platforms; `uv tool install .` yields a runnable
