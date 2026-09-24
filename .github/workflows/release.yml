@@ -8,17 +8,24 @@ permissions:
   contents: read
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          enable-cache: false
       - name: Tag matches project version
-        run: test "$GITHUB_REF_NAME" = "v$(uv version --short)"
+        run: |
+          version="v$(uv version --short)"
+          if [ "$GITHUB_REF_NAME" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match project version $version"
+            exit 1
+          fi
       - run: uv build
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -26,8 +33,9 @@ jobs:
           path: dist/
 
   publish:
-    needs: build
+    needs: [ci, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment: pypi
     permissions:
       id-token: write # PyPI trusted publishing

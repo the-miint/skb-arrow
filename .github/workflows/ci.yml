@@ -4,42 +4,30 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  UV_LOCKED: 1
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - run: uv sync
-      - run: uv run ruff check
-      - run: uv run ruff format --check
-      - run: uv run mypy
-
-  test:
+  check:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      - run: uv sync
-      - run: uv run pytest
-      - run: uv tool install .
-      - run: '"$(uv tool dir --bin)/skb-arrow" --version'
+      - run: .githooks/pre-commit
+      - run: uv build
+      - run: uv tool install dist/*.whl
+      - name: Installed wheel matches source
+        run: test "$("$(uv tool dir --bin)/skb-arrow" --version)" = "$(uv run --locked skb-arrow --version)"
