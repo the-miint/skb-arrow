@@ -9,9 +9,10 @@ on:
 permissions:
   contents: read
 
+# Only PRs share a group, so only PRs cancel superseded runs.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -30,4 +31,17 @@ jobs:
       - run: uv build
       - run: uv tool install dist/*.whl
       - name: Installed wheel matches source
-        run: test "$("$(uv tool dir --bin)/skb-arrow" --version)" = "$(uv run --locked skb-arrow --version)"
+        run: |
+          installed=$("$(uv tool dir --bin)/skb-arrow" --version)
+          expected=$(uv run --locked skb-arrow --version)
+          if [ "$installed" != "$expected" ]; then
+            printf 'installed:\n%s\nsource:\n%s\n' "$installed" "$expected"
+            echo "::error::installed wheel --version differs from source"
+            exit 1
+          fi
+      # Release publishes exactly this artifact.
+      - if: runner.os == 'Linux'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/

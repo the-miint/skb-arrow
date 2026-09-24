@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Pre-commit gate: lint, format, type-check and test must all pass.
+# CI runs this file too; keep it the full gate.
 # Enable with:  git config core.hooksPath .githooks
 set -euo pipefail
 
