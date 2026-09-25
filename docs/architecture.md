@@ -16,13 +16,15 @@ those messages ([`transport.md`](transport.md)).
 | capabilities | one module per scikit-bio capability | transport, JSON |
 
 A capability takes typed params and an Arrow table and returns an Arrow table. It never
-touches transport, JSON, or error mapping.
+touches transport or JSON; it raises skb_arrow error classes for faults it anticipates
+([`errors.md`](errors.md)).
 
 ## Modules
 
 | Module | Holds |
 |---|---|
 | `cli.py` | entry point, `--version` |
+| `errors.py` | protocol layer: error classes, `classify`, `collect_warnings` |
 | `protocol.py` | `PROTOCOL_VERSION` |
 | `registry.py` | `CAPABILITIES`: name → `schema_version` |
 

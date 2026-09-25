@@ -6,8 +6,10 @@ generic call path (DESIGN §1).
 ## Contract
 - Typed params and an Arrow table in, an Arrow table out.
 - Pure: the same request returns the same answer.
-- Knows nothing of transport, JSON, or error mapping ([`architecture.md`](architecture.md)).
-  Raise ordinary exceptions; [`errors.md`](errors.md) classifies them.
+- Knows nothing of transport or JSON ([`architecture.md`](architecture.md)).
+- Raises `InvalidInput`, `InvalidParam`, or `Unsupported` for faults it anticipates; anything
+  else it raises is a bug ([`errors.md`](errors.md#classification)).
+- Imports its libraries at module level, so their warning filters persist across calls.
 - Declares a `schema_version`, bumped on any output schema change.
 
 ## Seeds

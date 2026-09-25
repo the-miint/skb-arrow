@@ -157,6 +157,13 @@ Two durability rules keep it stable across versions — unknown kinds degrade, a
 carry tracebacks — and `cancelled` is absent because the host is killed, not asked (§3.8).
 Kinds, classifier, and rules: [`errors.md`](errors.md).
 
+**Revised in M2** (M1 and M2 review evidence): host bugs raise `ValueError`, `TypeError`, and
+`KeyError` too, so a type table alone reports them as caller errors without a traceback.
+Classification is now scoped — machinery errors are `internal` unless explicit — and, for
+capability code, keyed on the raising frame: raises from skb_arrow frames are bugs, and only
+third-party raises map by type. `TypeError` became `internal` because signature drift
+through a library decorator raises it in the library's frame (reproduced).
+
 ### 3.6 Warnings are collected, always
 
 Warnings are returned, not printed, so the caller decides where they go (miint routes them to
