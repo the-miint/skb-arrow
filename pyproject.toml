@@ -10,7 +10,7 @@ readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.14"
 authors = [{ name = "Daniel McDonald", email = "damcdonald@ucsd.edu" }]
-dependencies = []
+dependencies = ["pyarrow==25.0.1"]
 
 [project.scripts]
 skb-arrow = "skb_arrow.cli:main"
@@ -28,6 +28,11 @@ select = ["E", "W", "F", "I", "B", "UP", "N", "C4", "SIM"]
 [tool.mypy]
 strict = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# pyarrow ships no type information.
+module = ["pyarrow.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
