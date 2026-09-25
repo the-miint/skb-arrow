@@ -67,6 +67,8 @@ def test_init_replies_ready(tmp_path: Path) -> None:
         "protocol_version": 1,
         "host_version": version("skb-arrow"),
         "capabilities": {"echo": 1},
+        "id": None,
+        "warnings": [],
     }
 
 
@@ -104,7 +106,23 @@ def test_a_bad_init_is_host_incompatible(tmp_path: Path, init: object) -> None:
         "host_incompatible",
         1,
     )
-    assert session.segment_bytes is None
+    assert not session.ready
+
+
+def test_a_failed_init_may_be_retried(tmp_path: Path) -> None:
+    session = protocol.Session(tmp_path)
+    assert send(session, INIT | {"protocol_version": 2})["type"] == "error"
+    assert send(session, INIT)["type"] == "ready"
+
+
+def test_errors_carry_the_hosts_protocol_version_until_init_succeeds(
+    tmp_path: Path,
+) -> None:
+    session = protocol.Session(tmp_path)
+    before = [receive(protocol.handle(session, b"garbage\n")), send(session, {})]
+    send(session, INIT)
+    after = receive(protocol.handle(session, b"garbage\n"))
+    assert [r.get("protocol_version") for r in [*before, after]] == [1, 1, None]
 
 
 def test_segment_bytes_may_be_1024(tmp_path: Path) -> None:
@@ -121,26 +139,31 @@ def test_init_twice_is_host_incompatible(session: protocol.Session) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        b"\xff\n",
-        b"{\n",
-        b"[1]\n",
-        b"\n",
-        b"[" * 100_000 + b"\n",
-        b'{"type": "init", "protocol_version": ' + b"1" * 5000 + b"}\n",
-    ],
-    ids=["not utf-8", "bad json", "not an object", "empty", "deep", "huge int"],
-)
+UNREADABLE = {
+    "not utf-8": b"\xff\n",
+    "bad json": b"{\n",
+    "empty": b"\n",
+    "deep": b"[" * 100_000 + b"\n",
+    "huge int": b'{"type": "init", "protocol_version": ' + b"1" * 5000 + b"}\n",
+    "NaN": b'{"type": "call", "params": {"x": NaN}}\n',
+    "-Infinity": b'{"type": "call", "params": {"x": -Infinity}}\n',
+}
+
+
+@pytest.mark.parametrize("line", UNREADABLE.values(), ids=UNREADABLE.keys())
 def test_an_unreadable_line_is_host_incompatible(
     session: protocol.Session, line: bytes
 ) -> None:
     response = receive(protocol.handle(session, line))
-    assert (response["type"], response["kind"], response["id"]) == (
-        "error",
+    assert (response["kind"], response["id"]) == ("host_incompatible", None)
+    assert response["message"].startswith("unreadable request: ")
+
+
+def test_a_request_must_be_an_object(session: protocol.Session) -> None:
+    response = receive(protocol.handle(session, b"[1]\n"))
+    assert (response["kind"], response["message"]) == (
         "host_incompatible",
-        None,
+        "a request must be a JSON object",
     )
 
 
@@ -153,11 +176,13 @@ def test_an_unreadable_line_is_host_incompatible(
     ],
     ids=["unknown", "missing", "mistyped"],
 )
-def test_a_bad_type_is_host_incompatible(
-    session: protocol.Session, message: object, reason: str
+def test_a_bad_type_is_host_incompatible_and_its_segments_disposed(
+    session: protocol.Session, message: dict[str, object], reason: str
 ) -> None:
-    response = send(session, message)
+    named = message | {"input": {"table": [put(session.directory, "a")]}}
+    response = send(session, named)
     assert (response["kind"], response["message"]) == ("host_incompatible", reason)
+    assert list(session.directory.iterdir()) == []
 
 
 def test_a_call_before_init_is_rejected_and_its_segments_disposed(
@@ -193,6 +218,13 @@ def test_output_names_continue_across_calls(session: protocol.Session) -> None:
         for _ in range(2)
     ]
     assert outputs == [["skbout-0"], ["skbout-1"]]
+
+
+def test_outputs_may_be_named_as_inputs(session: protocol.Session) -> None:
+    first = send(session, call({"table": [put(session.directory, "a")]}))["output"]
+    second = send(session, call({"table": first}))["output"]
+    assert [p.name for p in session.directory.iterdir()] == second
+    assert transport.read(session.directory, second).equals(TABLE)
 
 
 def test_named_tables_reach_the_capability_by_name(
@@ -282,12 +314,53 @@ def test_a_rejected_call_disposes_every_segment_it_names(
 
 
 @pytest.mark.parametrize(
-    "inputs", [None, "a", ["a"], {"table": "a"}, {"table": [["a"]]}], ids=repr
+    "inputs",
+    ["a", ["a"], {"table": "a"}, {"table": [["a"]]}, {"table": {"x": "a"}}],
+    ids=repr,
 )
-def test_a_mistyped_input_is_host_incompatible(
+def test_a_mistyped_input_is_rejected_and_the_segments_it_names_disposed(
     session: protocol.Session, inputs: object
 ) -> None:
+    put(session.directory, "a")
     assert send(session, call(inputs))["kind"] == "host_incompatible"
+    assert list(session.directory.iterdir()) == []
+
+
+def test_a_call_without_input_is_host_incompatible(session: protocol.Session) -> None:
+    response = send(session, call(None))
+    assert (response["kind"], response["message"]) == (
+        "host_incompatible",
+        "missing field 'input'",
+    )
+
+
+def test_an_empty_segment_list_is_rejected_before_any_read(
+    session: protocol.Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    register(monkeypatch, "pair", pair, ("left", "right"))
+    (session.directory / "a").write_bytes(b"not arrow")
+    response = send(session, call({"left": ["a"], "right": []}, "pair"))
+    assert (response["kind"], response["message"]) == (
+        "host_incompatible",
+        "input 'right' must be a non-empty list of segment names",
+    )
+
+
+def test_a_failed_disposal_leaves_no_outputs_behind(
+    session: protocol.Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dispose, calls = transport.dispose, []
+
+    def fails_second(directory: Path, names: list[str]) -> None:
+        calls.append(names)
+        dispose(directory, names)
+        if len(calls) == 2:  # the first is read's own; the second, the protocol's
+            raise PermissionError("unlink")
+
+    put(session.directory, "a")
+    monkeypatch.setattr(transport, "dispose", fails_second)
+    assert send(session, call({"table": ["a"]}))["kind"] == "internal"
+    assert list(session.directory.iterdir()) == []
 
 
 def test_a_corrupt_segment_is_invalid_input(session: protocol.Session) -> None:

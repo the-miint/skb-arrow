@@ -18,8 +18,6 @@ def check_names(names: Iterable[str]) -> None:
     seen: set[str] = set()
     for name in names:
         folded = _checked(name).lower()  # APFS is case-insensitive.
-        if folded.startswith(_OUTPUT):
-            raise HostIncompatible(f"segment {name!r} uses the reserved {_OUTPUT!r}")
         if folded in seen:
             raise HostIncompatible(f"segment {name!r} named twice")
         seen.add(folded)

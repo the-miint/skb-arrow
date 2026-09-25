@@ -17,5 +17,5 @@ def main(argv: list[str] | None = None) -> int:
     caps = ", ".join(f"{n}/{v}" for n, v in registry.schema_versions().items())
     print(f"skb-arrow {version('skb-arrow')}")
     print(f"protocol {PROTOCOL_VERSION}")
-    print(f"capabilities: {caps or 'none'}")
+    print(f"capabilities: {caps}")
     return 0

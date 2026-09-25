@@ -6,12 +6,15 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
+
 from skb_arrow import registry, transport
 from skb_arrow.errors import HostIncompatible, classify, collect_warnings
 
 PROTOCOL_VERSION = 1
 _DEFAULT_SEGMENT_BYTES = 256 << 20
 _MIN_SEGMENT_BYTES = 1024
+_ID_TYPES = (str, int)
 _JSON_TYPES = {str: "a string", int: "an integer", dict: "an object", list: "an array"}
 _REQUIRED = object()
 
@@ -19,7 +22,8 @@ _REQUIRED = object()
 @dataclass
 class Session:
     directory: Path
-    segment_bytes: int | None = None  # None until init
+    ready: bool = False  # an init succeeded
+    segment_bytes: int = _DEFAULT_SEGMENT_BYTES
     outputs: Iterator[int] = field(default_factory=itertools.count)
 
 
@@ -32,18 +36,17 @@ def handle(session: Session, line: bytes) -> bytes:
             response = _respond(session, request)
         except Exception as e:
             response = {"type": "error", **classify(e, capability=False)}
-            if request.get("type") == "init":
+            if not session.ready:
                 response["protocol_version"] = PROTOCOL_VERSION
-    if response["type"] != "ready":
-        ident = request.get("id")
-        response["id"] = ident if type(ident) in (str, int) else None
-        response["warnings"] = warnings
+    ident = request.get("id")
+    response["id"] = ident if type(ident) in _ID_TYPES else None
+    response["warnings"] = warnings
     return (json.dumps(response) + "\n").encode()
 
 
 def _parse(line: bytes) -> dict[str, Any]:
     try:
-        request = json.loads(line.decode())
+        request = json.loads(line.decode(), parse_constant=_not_json)
     except (ValueError, RecursionError) as e:
         raise HostIncompatible(f"unreadable request: {e}") from e
     if type(request) is not dict:
@@ -51,20 +54,26 @@ def _parse(line: bytes) -> dict[str, Any]:
     return request
 
 
+def _not_json(constant: str) -> None:
+    raise ValueError(f"{constant} is not JSON")
+
+
 def _respond(session: Session, request: dict[str, Any]) -> dict[str, Any]:
-    kind = _field(request, "type", str)
-    if kind == "init":
-        return _init(session, request)
-    if kind != "call":
-        raise HostIncompatible(f"unknown message type {kind!r}")
     try:
-        return _call(session, request)
+        kind = _field(request, "type", str)
+        if kind == "init":
+            return _init(session, request)
+        if kind != "call":
+            raise HostIncompatible(f"unknown message type {kind!r}")
+        capability, tables, params = _prepare(session, request)
     finally:
-        transport.dispose(session.directory, _named(request))
+        # Before the capability runs, so no output can exist if this fails.
+        transport.dispose(session.directory, _named(request.get("input")))
+    return _run(session, capability, tables, params)
 
 
 def _init(session: Session, request: dict[str, Any]) -> dict[str, Any]:
-    if session.segment_bytes is not None:
+    if session.ready:
         raise HostIncompatible("init sent twice")
     requested = _field(request, "protocol_version", int)
     if requested != PROTOCOL_VERSION:
@@ -76,7 +85,7 @@ def _init(session: Session, request: dict[str, Any]) -> dict[str, Any]:
     )
     if segment_bytes < _MIN_SEGMENT_BYTES:
         raise HostIncompatible(f"segment_bytes must be at least {_MIN_SEGMENT_BYTES}")
-    session.segment_bytes = segment_bytes
+    session.ready, session.segment_bytes = True, segment_bytes
     return {
         "type": "ready",
         "protocol_version": PROTOCOL_VERSION,
@@ -85,18 +94,36 @@ def _init(session: Session, request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _call(session: Session, request: dict[str, Any]) -> dict[str, Any]:
-    if session.segment_bytes is None:
+def _prepare(
+    session: Session, request: dict[str, Any]
+) -> tuple[registry.Capability, dict[str, pa.Table], dict[str, Any]]:
+    """A call's capability, input tables, and params, once all are checked."""
+    if not session.ready:
         raise HostIncompatible("call before init")
-    _field(request, "id", str, int, default=None)  # checked here; `handle` echoes it
+    _field(request, "id", *_ID_TYPES, default=None)  # checked here; `handle` echoes it
     inputs = _field(request, "input", dict)
     for table, names in inputs.items():
-        if type(names) is not list or any(type(name) is not str for name in names):
-            raise HostIncompatible(f"input {table!r} must be a list of segment names")
+        if (
+            type(names) is not list
+            or not names
+            or any(type(n) is not str for n in names)
+        ):
+            raise HostIncompatible(
+                f"input {table!r} must be a non-empty list of segment names"
+            )
     transport.check_names(name for names in inputs.values() for name in names)
     params = _field(request, "params", dict, default={})
     capability = registry.validate(_field(request, "capability", str), inputs, params)
     tables = {t: transport.read(session.directory, s) for t, s in inputs.items()}
+    return capability, tables, params
+
+
+def _run(
+    session: Session,
+    capability: registry.Capability,
+    tables: dict[str, pa.Table],
+    params: dict[str, Any],
+) -> dict[str, Any]:
     try:
         output = capability.run(tables, params)
     except Exception as e:
@@ -107,13 +134,18 @@ def _call(session: Session, request: dict[str, Any]) -> dict[str, Any]:
     return {"type": "result", "output": names}
 
 
-def _named(request: dict[str, Any]) -> list[str]:
-    """Every string a call names as a segment, well-formed or not."""
-    inputs = request.get("input")
-    if type(inputs) is not dict:
-        return []
-    lists = [names for names in inputs.values() if type(names) is list]
-    return [name for names in lists for name in names if type(name) is str]
+def _named(value: object) -> list[str]:
+    """Every string among `value`'s values, at any depth: what a call names."""
+    names, pending = [], [value]
+    while pending:
+        item = pending.pop()
+        if type(item) is str:
+            names.append(item)
+        elif type(item) is list:
+            pending.extend(item)
+        elif type(item) is dict:
+            pending.extend(item.values())
+    return names
 
 
 def _field(

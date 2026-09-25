@@ -71,7 +71,7 @@ Only `Exception` is caught; `KeyboardInterrupt` and `SystemExit` end the host.
 - Deduplicated by (category, message) in first-seen order. After 20 distinct entries, one
   `{"category": "skb_arrow.WarningsTruncated", "message": "warnings beyond the first 20
   distinct", "count": <occurrences>}`. Memory is bounded by the 20 entries, not the flood.
-- Carried on results and errors.
+- Carried on every response.
 - Filters a library installs during a call are dropped when it ends, so capabilities import
   their libraries at module level and the host imports every capability before `ready`.
 - Context-aware warnings (`-X context_aware_warnings`, default on free-threaded builds) are

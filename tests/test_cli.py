@@ -25,13 +25,13 @@ def test_version_reports_package_protocol_and_capabilities(
 def test_version_lists_capabilities_sorted_regardless_of_registration_order(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for name, schema_version in [("b", 2), ("a", 1)]:
-        capability = registry.Capability(
-            schema_version, frozenset(), frozenset(), echo.run
-        )
-        monkeypatch.setitem(registry.CAPABILITIES, name, capability)
+    registered = {
+        name: registry.Capability(schema_version, frozenset(), frozenset(), echo.run)
+        for name, schema_version in [("b", 2), ("a", 1)]
+    }
+    monkeypatch.setattr(registry, "CAPABILITIES", registered)
     cli.main(["--version"])
-    assert capsys.readouterr().out.endswith("\ncapabilities: a/1, b/2, echo/1\n")
+    assert capsys.readouterr().out.endswith("\ncapabilities: a/1, b/2\n")
 
 
 def test_installed_console_script_runs_main() -> None:

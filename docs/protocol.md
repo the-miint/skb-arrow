@@ -35,15 +35,19 @@ come in request order, so a caller may pipeline. Shutdown: the caller closes std
 | `init` | → | `protocol_version` int; `segment_bytes` int ≥ 1024, optional (default 256 MiB) |
 | `ready` | ← | `protocol_version`; `host_version` str; `capabilities` {name: `schema_version`} |
 | `call` | → | `id` str or int, optional; `capability` str; `params` object, optional; `input` {table: [segment names]} |
-| `result` | ← | `id`; `output` [segment names]; `warnings` |
-| `error` | ← | `id` (null if unknown); `kind`; `message`; `warnings`; `traceback` (`internal` only); `protocol_version` (answering `init`) |
+| `result` | ← | `output` [segment names] |
+| `error` | ← | `kind`; `message`; `traceback` (`internal` only); `protocol_version` (until an `init` succeeds) |
 
-- `init` comes first, once. An int is a JSON integer, never `true`; a null field is absent.
-- `host_incompatible`, and the host keeps serving: a line that isn't a UTF-8 JSON object, an
-  unknown `type`, a missing or mistyped field, `call` before `init`, a second `init`, another
-  `protocol_version`, `segment_bytes` below 1024, an unknown capability, or a segment rule
-  broken ([`transport.md`](transport.md#segments)).
+- Every response also carries `id` (the request's, if a string or int; else null) and
+  `warnings` ([`errors.md`](errors.md#warnings)).
+- `init` must succeed before any `call`, and only once. A failed `init` may be retried, so a
+  caller can fall back to an older version.
+- An int is a JSON integer, never `true`; a null field is absent.
+- `host_incompatible`, and the host keeps serving: a line that isn't a UTF-8 JSON object
+  (`NaN` and `Infinity` are not JSON), an unknown `type`, a missing or mistyped field, `call`
+  before `init`, a second `init`, another `protocol_version`, `segment_bytes` below 1024, an
+  unknown capability, or a segment rule broken ([`transport.md`](transport.md#segments)).
 - `invalid_param`: a param the capability doesn't declare, or input tables other than those it
   declares ([`capabilities.md`](capabilities.md#registry)).
-- Every segment a call names is unlinked before its response; `output` is one table.
-- `warnings`: [`errors.md`](errors.md#warnings).
+- Every string under a request's `input` is a segment it names. All are unlinked, whatever the
+  outcome, before the capability runs. `output` is one table.

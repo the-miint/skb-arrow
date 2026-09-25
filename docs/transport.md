@@ -20,11 +20,11 @@ filesystem fails the call with `resource`.
 - A table is a non-empty list of segments (else `host_incompatible`), each one uncompressed
   Arrow IPC stream. Its segments share a schema, metadata included, and concatenate in order.
   An empty table is one schema-only segment.
-- **Input names** match `[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}`, don't start with `skbout-`, and
-  are distinct within a call, compared case-insensitively (APFS). Violations are
-  `host_incompatible`.
+- **Input names** match `[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}` and are distinct within a call,
+  compared case-insensitively (APFS). Violations are `host_incompatible`.
 - **Output names** are `skbout-<n>`, n counting from 0 per session, each created exclusively,
-  mode 0600. A file already there is `host_incompatible`.
+  mode 0600. The caller never creates one; a file already there is `host_incompatible`. An
+  output may be named as an input, chaining calls without a copy.
 - A name is single-use until the response to the call naming it arrives.
 - **Receiver disposes.** The host unlinks every segment a call names, read or not, before
   responding; the caller unlinks outputs. A read maps each segment, then unlinks it: the data

@@ -295,19 +295,13 @@ def test_malformed_names_are_rejected(name: str) -> None:
         transport.check_names([name])
 
 
-@pytest.mark.parametrize("name", ["skbout-0", "SKBOUT-x", "SkbOut-"])
-def test_the_output_prefix_is_reserved_in_any_case(name: str) -> None:
-    with pytest.raises(HostIncompatible, match="reserved"):
-        transport.check_names([name])
-
-
 def test_names_must_be_distinct_ignoring_case() -> None:
     with pytest.raises(HostIncompatible, match="'seG' named twice"):
         transport.check_names(["Seg", "other", "seG"])
 
 
 def test_well_formed_distinct_names_pass() -> None:
-    transport.check_names(["a", "-", "_x.y-z", "skbout", "A" * 128, "b"])
+    transport.check_names(["a", "-", "_x.y-z", "skbout-0", "A" * 128, "b"])
 
 
 def test_dispose_unlinks_only_names_that_can_be_segments(tmp_path: Path) -> None:
