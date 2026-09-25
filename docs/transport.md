@@ -6,8 +6,9 @@ Why memory-mapped files, not POSIX shm: DESIGN §3.2. Why chunked: §3.4. Implem
 ## Session directory
 - The caller creates a dedicated, empty, private (`mkdtemp`) directory per host and starts
   `skb-arrow --segment-dir DIR`. Every segment, in both directions, is a regular file in DIR.
-- The host exits 2 unless DIR exists, is a directory, is empty, and is writable, so it never
-  cleans a directory holding anything else. The caller writes no segment before `ready`.
+- The host exits 2 unless DIR exists, is a directory, is readable and writable, and is empty,
+  so it never cleans a directory holding anything else. It resolves DIR at start, so a later
+  `chdir` or a symlink can't redirect cleanup. The caller writes no segment before `ready`.
 - Whoever outlives the other cleans DIR: the host on stdin EOF or a broken pipe, the caller
   after the host exits (`ENOENT` counts as done). So the caller opens every output it needs
   before closing stdin. Cleanup unlinks DIR's entries, then `rmdir`s it, before any diagnostic

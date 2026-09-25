@@ -6,9 +6,10 @@ The contract between skb-arrow and its callers. Implementation: `src/skb_arrow/p
 - The caller runs `skb-arrow` as a child process.
 - Control: one JSON object per line. Requests on stdin, responses on stdout.
 - stdout carries protocol messages only. Before importing anything heavy, the host moves the
-  channel to private fds that children don't inherit; fd 0 then reads `/dev/null`, and fd 1
-  and `sys.stdout` write to stderr. Library prints, C-level writes to fd 1, `input()`, and
-  child processes cannot reach the channel.
+  channel to private fds that exec'd children don't inherit; fd 0 then reads `/dev/null`, and
+  fd 1 and `sys.stdout` write to stderr. Library prints, C-level writes to fd 1, `input()`,
+  and exec'd children cannot reach the channel. A bare `fork()` child does hold it: if one
+  outlives the host, the caller sees no EOF (M4 lifecycle).
 - stderr carries diagnostics only. Discipline rules: M4.
 - Bulk data never rides the control channel; messages name segments
   ([`transport.md`](transport.md)).
@@ -30,7 +31,9 @@ Current: `PROTOCOL_VERSION = 1` (`src/skb_arrow/protocol.py`).
 
 ## Messages
 One UTF-8 JSON object per line, with a string `type`. Lines are handled one at a time; responses
-come in request order, so a caller may pipeline. Shutdown: the caller closes stdin, having
+come in request order, so a caller may pipeline, reading responses as it goes (or bounding
+requests in flight): the host blocks on a response nobody reads. Shutdown: the caller closes
+stdin, having
 opened every output it needs, since the host then cleans DIR
 ([`transport.md`](transport.md#session-directory)).
 

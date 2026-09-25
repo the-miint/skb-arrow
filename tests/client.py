@@ -20,22 +20,23 @@ INIT = {"type": "init", "protocol_version": 1}
 
 
 class Client:
-    def __init__(
-        self, command: list[str], directory: Path, env: dict[str, str] | None = None
-    ) -> None:
+    def __init__(self, command: list[str], directory: Path, **popen: Any) -> None:
         self.directory = directory
         self.log = directory.with_name(f"{directory.name}.stderr")
         # stderr drains to a file: an undrained pipe can wedge the host.
         with self.log.open("wb") as stderr:
+            # DIR relative to the host's cwd, as a caller may pass it.
             self.process = subprocess.Popen(
-                [*command, "--segment-dir", str(directory)],
+                [*command, "--segment-dir", directory.name],
+                cwd=directory.parent,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=stderr,
-                env=env,
+                **popen,
             )
         # A wedged host fails its test instead of hanging it.
         self.watchdog = threading.Timer(30, self.process.kill)
+        self.watchdog.daemon = True
         self.watchdog.start()
 
     def write(self, message: object) -> None:
@@ -73,6 +74,15 @@ class Client:
         status = self.process.wait()
         self.watchdog.cancel()
         return status
+
+    def kill(self) -> None:
+        """Stop the host if it still runs: test teardown."""
+        self.watchdog.cancel()
+        self.process.kill()
+        self.process.wait()
+        for pipe in (self.process.stdin, self.process.stdout):
+            if pipe:
+                pipe.close()
 
     def clean(self) -> None:
         """Unlink the directory's entries, then remove it; what's gone is done."""

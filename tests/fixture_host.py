@@ -1,10 +1,10 @@
 """A host with test capabilities: fixture_host.py --segment-dir DIR."""
 
-import json
 import os
 import signal
 import subprocess
 import sys
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,7 +15,11 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 
+DYING = threading.Event()
+
+
 def noisy(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    os.chdir("/")  # a relative DIR must not follow
     print("print during run")
     os.write(1, b"write during run\n")
     subprocess.run(["echo", "child during run"], check=True)
@@ -36,6 +40,7 @@ def fail(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Tab
 
 def dies(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
     print("about to die")
+    DYING.set()
     return tables["table"]
 
 
@@ -57,7 +62,7 @@ def main() -> int:
 
     def killed_before_replying(session: protocol.Session, line: bytes) -> bytes:
         response = handle(session, line)
-        if json.loads(line).get("capability") == "dies":
+        if DYING.is_set():
             os.kill(os.getpid(), signal.SIGKILL)
         return response
 

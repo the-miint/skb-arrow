@@ -1,5 +1,6 @@
 import os
 import sys
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import BinaryIO
@@ -10,9 +11,15 @@ from typing import BinaryIO
 def reserve() -> tuple[BinaryIO, int]:
     """The protocol channel (requests, response fd), moved off fds 0 and 1.
 
-    Call first. Children don't inherit the copies. fd 0 then reads /dev/null; fd 1
-    and sys.stdout write to stderr, line-buffered, so diagnostics survive a kill.
+    Call first. Exec'd children don't inherit the copies. fd 0 then reads /dev/null;
+    fd 1 and sys.stdout write to stderr, where print() is line-buffered.
     """
+    for fd in range(3):
+        try:
+            os.fstat(fd)
+        except OSError:
+            # Missing: fill it, or the dups below would land on it.
+            os.open(os.devnull, os.O_RDWR)
     requests = os.fdopen(os.dup(0), "rb")
     responses = os.dup(1)
     null = os.open(os.devnull, os.O_RDONLY)
@@ -28,6 +35,8 @@ def serve(directory: Path, requests: BinaryIO, responses: int) -> int:
     if problem := _unusable(directory):
         print(f"skb-arrow: --segment-dir {directory}: {problem}", file=sys.stderr)
         return 2
+    # Absolute and link-free, so a later chdir can't redirect cleanup.
+    directory = directory.resolve()
     try:
         from skb_arrow import protocol  # loads pyarrow and every capability
 
@@ -47,10 +56,12 @@ def _unusable(directory: Path) -> str | None:
         return "does not exist"
     if not directory.is_dir():
         return "is not a directory"
+    if not os.access(directory, os.R_OK | os.X_OK):
+        return "is not readable"
+    if not os.access(directory, os.W_OK):
+        return "is not writable"
     if any(directory.iterdir()):
         return "is not empty"
-    if not os.access(directory, os.W_OK | os.X_OK):
-        return "is not writable"
     return None
 
 
@@ -62,10 +73,23 @@ def _send(fd: int, data: bytes) -> None:
 
 
 def _clean(directory: Path) -> None:
-    """Unlink `directory`'s entries, then remove it; what's gone is done."""
-    with suppress(FileNotFoundError):
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                with suppress(FileNotFoundError):
-                    os.unlink(entry.path)
-        os.rmdir(directory)
+    """Unlink `directory`'s entries, then remove it; what's gone is done.
+
+    Every removal is tried; the first failure is raised after.
+    """
+    failures: list[OSError] = []
+
+    def remove(unlink: Callable[[str], None], path: str) -> None:
+        try:
+            unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            failures.append(e)
+
+    with suppress(FileNotFoundError), os.scandir(directory) as entries:
+        for entry in entries:
+            remove(os.unlink, entry.path)
+    remove(os.rmdir, str(directory))
+    if failures:
+        raise failures[0]
