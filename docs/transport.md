@@ -9,8 +9,9 @@ Why memory-mapped files, not POSIX shm: DESIGN §3.2. Why chunked: §3.4. Implem
 - The host exits 2 unless DIR exists, is a directory, is empty, and is writable, so it never
   cleans a directory holding anything else. The caller writes no segment before `ready`.
 - Whoever outlives the other cleans DIR: the host on stdin EOF or a broken pipe, the caller
-  after the host exits (`ENOENT` counts as done). Cleanup unlinks regular files, then
-  `rmdir`s, before any diagnostic write (stderr may be a dead pipe).
+  after the host exits (`ENOENT` counts as done). So the caller opens every output it needs
+  before closing stdin. Cleanup unlinks DIR's entries, then `rmdir`s it, before any diagnostic
+  write (stderr may be a dead pipe).
 
 **Placement:** tmpfs (`/dev/shm`) on Linux, under `$TMPDIR` on macOS. Default Docker containers
 mount a 64 MiB `/dev/shm`; raise `--shm-size` or place DIR elsewhere. No fallback: a full

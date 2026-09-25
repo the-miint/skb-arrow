@@ -1,6 +1,6 @@
 # skb-arrow — Design
 
-**Status:** M1 (foundation) complete; M2 next.
+**Status:** M1 (foundation) and M2 (protocol and transport) complete; M3 next.
 **Scope of this document:** skb-arrow only. The duckdb-miint integration (C++ submit
 framework, `install_skb_arrow()`, SQL wrappers) is deliberately out of scope and gets its
 own plan in that repository. **The protocol specification in this repo is the contract
@@ -60,6 +60,11 @@ caller was evaluated and rejected — see §3.1.
 Four internal layers, each independently testable; table and layering rule in
 [`architecture.md`](architecture.md). The layering is the main maintainability lever: a
 capability author writes one function and touches no transport, no JSON, no error mapping.
+
+**Revised in M2:** a capability takes named tables, not one. `ancombc` needs sample metadata
+beside its feature table, and `mantel` compares two distance matrices; folding either into one
+table would push reshaping onto every caller. Protocol v1 carries named inputs from the start,
+by §3.4's reasoning: no breaking bump later.
 
 ---
 

@@ -23,12 +23,13 @@ touches transport or JSON; it raises skb_arrow error classes for faults it antic
 
 | Module | Holds |
 |---|---|
-| `cli.py` | entry point, `--version` |
+| `cli.py` | entry point: `--version`, `--segment-dir DIR` |
+| `host.py` | `reserve` (the channel, before heavy imports), `serve`: DIR checks, loop, cleanup |
 | `errors.py` | error classes (raised in every layer), `classify`, `collect_warnings` |
 | `protocol.py` | `PROTOCOL_VERSION`, `Session`, `handle`: one request line → one response line |
 | `transport.py` | segment `read`, `write`, `dispose`, name checks |
 | `registry.py` | `Capability`, `CAPABILITIES`, `validate` |
 | `capabilities/echo.py` | returns its input |
 
-M2 adds the host (serving loop, fd reservation); M3 adds `ancombc`. A module becomes a package
+M3 adds `ancombc`. A module becomes a package
 when it outgrows one file; imports don't change.
