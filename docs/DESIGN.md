@@ -1,7 +1,6 @@
 # skb-arrow — Design
 
-**Status:** M1 (foundation) complete; M2 (protocol and transport) implemented, awaiting CI on
-both platforms.
+**Status:** M1 (foundation) and M2 (protocol and transport) complete; M3 next.
 **Scope of this document:** skb-arrow only. The duckdb-miint integration (C++ submit
 framework, `install_skb_arrow()`, SQL wrappers) is deliberately out of scope and gets its
 own plan in that repository. **The protocol specification in this repo is the contract
