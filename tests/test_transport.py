@@ -2,6 +2,7 @@ import errno
 import gc
 import itertools
 import os
+import resource
 import struct
 import sys
 from pathlib import Path
@@ -98,23 +99,35 @@ def test_one_huge_row_is_isolated_and_the_rest_packed(tmp_path: Path) -> None:
     assert transport.read(tmp_path, names).equals(table)
 
 
+def dictionary_heavy(dictionary_bytes: int) -> pa.Table:
+    """1000 rows of 12 bytes, and a dictionary every slice counts in full."""
+    indices = pa.array([0] * 1000, pa.int32())
+    dictionary = pa.array(["d" * dictionary_bytes])
+    return pa.table(
+        {
+            "d": pa.DictionaryArray.from_arrays(indices, dictionary),
+            "v": pa.array(range(1000), pa.int64()),
+        }
+    )
+
+
 @pytest.mark.parametrize(("dictionary_bytes", "segments"), [(18_000, 1), (8_000, 2)])
 def test_halving_stops_once_both_halves_keep_over_75_percent(
     tmp_path: Path, dictionary_bytes: int, segments: int
 ) -> None:
-    # Every slice counts the whole dictionary: halves keep 80% or 70% of the batch.
-    rows = 1000
-    indices = pa.array([0] * rows, pa.int32())
-    dictionary = pa.array(["d" * dictionary_bytes])
-    table = pa.table(
-        {
-            "d": pa.DictionaryArray.from_arrays(indices, dictionary),
-            "v": pa.array(range(rows), pa.int64()),
-        }
-    )
+    # Halves keep 80% or 70% of the batch.
+    table = dictionary_heavy(dictionary_bytes)
     names = write(tmp_path, table, 1000)
     assert len(names) == segments
     assert transport.read(tmp_path, names).equals(table)
+
+
+def test_halves_that_fit_are_kept_even_when_they_share_a_buffer(
+    tmp_path: Path,
+) -> None:
+    table = dictionary_heavy(14_000)  # halves keep 77%
+    names = write(tmp_path, table, table.slice(0, 500).nbytes)
+    assert rows_per_segment(tmp_path, names) == [500, 500]
 
 
 def test_a_failed_read_holds_no_segment_open(tmp_path: Path) -> None:
@@ -124,8 +137,20 @@ def test_a_failed_read_holds_no_segment_open(tmp_path: Path) -> None:
     with pytest.raises(InvalidInput) as raised:
         transport.read(tmp_path, ["ok", "bad"])
     # `raised` keeps the failed read's frame, and with it any unclosed mapping.
-    assert raised.value.__traceback__ is not None
     assert len(os.listdir("/dev/fd")) == before
+    del raised
+
+
+def test_a_read_holds_one_segment_open_at_a_time(tmp_path: Path) -> None:
+    names = write(tmp_path, ints(6400), 1600)
+    assert len(names) == 64
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (len(os.listdir("/dev/fd")) + 8, hard))
+    try:
+        result = transport.read(tmp_path, names)
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+    assert result.equals(ints(6400))
 
 
 def test_zero_column_tables_keep_their_row_count(tmp_path: Path) -> None:
@@ -169,19 +194,39 @@ def test_segments_with_differing_schemas_are_invalid_input(
     assert list(tmp_path.iterdir()) == []
 
 
-def overrun_offsets() -> bytes:
-    """A stream whose string offsets run past the data buffer."""
-    raw = stream(pa.table({"s": ["hello", ""]}))
-    offsets = struct.pack("<3i", 0, 5, 5)
-    assert raw.count(offsets) == 1
-    return raw.replace(offsets, struct.pack("<3i", 0, 5, 10_000_000))
+def replace_once(data: bytes, old: bytes, new: bytes) -> bytes:
+    assert data.count(old) == 1
+    return data.replace(old, new)
 
 
+def patch_schema(table: pa.Table, old: bytes, new: bytes) -> bytes:
+    """`table`'s stream with one value in its schema message replaced."""
+    raw = stream(table)
+    end = 8 + struct.unpack_from("<i", raw, 4)[0]  # continuation, length, flatbuffer
+    return replace_once(raw[:end], old, new) + raw[end:]
+
+
+def pack(fmt: str, *values: int) -> bytes:
+    return struct.pack(f"<{fmt}", *values)
+
+
+TWO_DICTIONARIES = pa.table(
+    {"x": pa.array(["p"]).dictionary_encode(), "y": pa.array(["q"]).dictionary_encode()}
+)
 CORRUPT = {
     "empty": b"",
     "garbage": b"\xff" * 64,
     "truncated": stream(ints(1000))[:-600],
-    "overrun offsets": overrun_offsets(),
+    # Structurally invalid: offsets run past the data buffer.
+    "overrun offsets": replace_once(
+        stream(pa.table({"s": ["hello", ""]})),
+        pack("3i", 0, 5, 5),
+        pack("3i", 0, 5, 10_000_000),
+    ),
+    # ArrowNotImplementedError: a 4-bit integer.
+    "bit width": patch_schema(pa.table({"a": [1]}), pack("i", 64), pack("i", 4)),
+    # ArrowKeyError: the second dictionary batch matches no field's id.
+    "dictionary id": patch_schema(TWO_DICTIONARIES, pack("q", 1), pack("q", 7)),
 }
 
 
@@ -193,6 +238,18 @@ def test_a_corrupt_segment_is_invalid_input(tmp_path: Path, data: bytes) -> None
     assert list(tmp_path.iterdir()) == []
 
 
+def test_memory_exhaustion_while_decoding_stays_a_memory_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def exhausted(source: pa.MemoryMappedFile) -> None:
+        raise pa.ArrowMemoryError("malloc failed")
+
+    (tmp_path / "in").write_bytes(stream(SAMPLE))
+    monkeypatch.setattr(ipc, "open_stream", exhausted)
+    with pytest.raises(MemoryError):
+        transport.read(tmp_path, ["in"])
+
+
 def test_a_missing_segment_is_invalid_input_and_unopened_ones_are_disposed(
     tmp_path: Path,
 ) -> None:
@@ -201,6 +258,33 @@ def test_a_missing_segment_is_invalid_input_and_unopened_ones_are_disposed(
     with pytest.raises(InvalidInput, match="^segment b not found$"):
         transport.read(tmp_path, ["a", "b", "c"])
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_table_needs_at_least_one_segment(tmp_path: Path) -> None:
+    with pytest.raises(HostIncompatible, match="at least one segment"):
+        transport.read(tmp_path, [])
+
+
+def test_read_refuses_names_that_leave_the_directory(tmp_path: Path) -> None:
+    directory = tmp_path / "session"
+    directory.mkdir()
+    (tmp_path / "outside").write_bytes(stream(SAMPLE))
+    (directory / "a").write_bytes(stream(SAMPLE))
+    with pytest.raises(HostIncompatible, match="^bad segment name"):
+        transport.read(directory, ["a", "../outside"])
+    assert list(directory.iterdir()) == []
+    assert (tmp_path / "outside").exists()
+
+
+def test_a_segment_that_cannot_be_unlinked_does_not_stop_the_rest(
+    tmp_path: Path,
+) -> None:
+    for name in ["a", "c"]:
+        (tmp_path / name).touch()
+    (tmp_path / "sub").mkdir()
+    with pytest.raises(OSError):
+        transport.dispose(tmp_path, ["a", "sub", "c"])
+    assert [p.name for p in tmp_path.iterdir()] == ["sub"]
 
 
 @pytest.mark.parametrize(
@@ -239,10 +323,19 @@ def test_dispose_unlinks_only_names_that_can_be_segments(tmp_path: Path) -> None
 
 def test_a_failed_write_unlinks_its_segments_and_spares_others(tmp_path: Path) -> None:
     (tmp_path / "skbout-1").write_bytes(b"not ours")
-    with pytest.raises(FileExistsError):
+    with pytest.raises(HostIncompatible, match="^segment skbout-1 exists"):
         write(tmp_path, ints(1000), 5000)
     assert [p.name for p in tmp_path.iterdir()] == ["skbout-1"]
     assert (tmp_path / "skbout-1").read_bytes() == b"not ours"
+
+
+def test_outputs_are_private_to_their_owner(tmp_path: Path) -> None:
+    umask = os.umask(0)
+    try:
+        names = write(tmp_path, SAMPLE)
+    finally:
+        os.umask(umask)
+    assert (tmp_path / names[0]).stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="needs /dev/full")

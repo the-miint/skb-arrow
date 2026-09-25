@@ -123,8 +123,10 @@ Memory-mapped files instead:
   are not async-signal-safe.
 
 **Known gap** (M1 review): a segment its consumer never opens is never reclaimed — the host
-killed after writing a response, or a request rejected before its segments are opened. M2 must
-close it; see [`transport.md`](transport.md#open).
+killed after writing a response, or a request rejected before its segments are opened. M2
+closes it with a session directory and receiver-disposes
+([`transport.md`](transport.md#session-directory)); what remains is listed under
+[residuals](transport.md#residuals).
 
 Placement rules: [`transport.md`](transport.md). Linux uses tmpfs: RAM-backed, ordinary file
 semantics.

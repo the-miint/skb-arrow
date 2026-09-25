@@ -1,7 +1,6 @@
 import os
 import re
 from collections.abc import Iterable, Iterator, Sequence
-from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import BinaryIO
 
@@ -18,9 +17,7 @@ def check_names(names: Iterable[str]) -> None:
     """Raise `HostIncompatible` unless `names` suit one call's input segments."""
     seen: set[str] = set()
     for name in names:
-        if not _NAME.fullmatch(name):
-            raise HostIncompatible(f"bad segment name {name!r}")
-        folded = name.lower()  # APFS is case-insensitive.
+        folded = _checked(name).lower()  # APFS is case-insensitive.
         if folded.startswith(_OUTPUT):
             raise HostIncompatible(f"segment {name!r} uses the reserved {_OUTPUT!r}")
         if folded in seen:
@@ -30,18 +27,19 @@ def check_names(names: Iterable[str]) -> None:
 
 def read(directory: Path, names: Sequence[str]) -> pa.Table:
     """The table in segments `names`; all are unlinked, whether or not it succeeds."""
-    with ExitStack() as stack:
-        try:
-            sources = [stack.enter_context(_map(directory, name)) for name in names]
-        finally:
-            dispose(directory, names)
-        tables = [_decode(s, name) for s, name in zip(sources, names, strict=True)]
-    for name, table in zip(names, tables, strict=True):
-        if not table.schema.equals(tables[0].schema, check_metadata=True):
-            raise InvalidInput(f"segment {name}: schema differs from {names[0]}")
+    try:
+        if not names:
+            raise HostIncompatible("a table needs at least one segment")
+        schema, batches = _load(directory, names[0])
+        for name in names[1:]:
+            other, more = _load(directory, name)
+            if not other.equals(schema, check_metadata=True):
+                raise InvalidInput(f"segment {name}: schema differs from {names[0]}")
+            batches += more
+    finally:
+        dispose(directory, names)
     # Not pa.concat_tables: it drops the row count of zero-column tables.
-    batches = [batch for table in tables for batch in table.to_batches()]
-    return pa.Table.from_batches(batches, tables[0].schema)
+    return pa.Table.from_batches(batches, schema)
 
 
 def write(
@@ -64,28 +62,47 @@ def write(
 
 
 def dispose(directory: Path, names: Iterable[str]) -> None:
-    """Unlink segments `names`, skipping absent ones and names no segment can have."""
+    """Unlink segments `names`, skipping absent ones and names no segment can have.
+
+    Every name is tried; the first failure is raised after.
+    """
+    failure: OSError | None = None
     for name in names:
         if _NAME.fullmatch(name):
-            with suppress(FileNotFoundError):
+            try:
                 os.unlink(directory / name)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                failure = failure or e
+    if failure is not None:
+        raise failure
 
 
-def _map(directory: Path, name: str) -> pa.MemoryMappedFile:
+def _checked(name: str) -> str:
+    if not _NAME.fullmatch(name):
+        raise HostIncompatible(f"bad segment name {name!r}")
+    return name
+
+
+def _load(directory: Path, name: str) -> tuple[pa.Schema, list[pa.RecordBatch]]:
     try:
-        return pa.memory_map(str(directory / name))
+        source = pa.memory_map(str(directory / _checked(name)))
     except FileNotFoundError as e:
         raise InvalidInput(f"segment {name} not found") from e
-
-
-def _decode(source: pa.MemoryMappedFile, name: str) -> pa.Table:
-    try:
-        table = ipc.open_stream(source).read_all()
-        table.validate()
-    # pyarrow reports a malformed stream as a bare OSError.
-    except (pa.ArrowInvalid, OSError) as e:
-        raise InvalidInput(f"segment {name}: {e}") from e
-    return table
+    # Closed once decoded: mapped data outlives the file, and fds stay bounded.
+    with source:
+        try:
+            reader = ipc.open_stream(source)
+            batches = list(reader)
+            for batch in batches:
+                batch.validate()
+        except MemoryError:
+            raise
+        # A malformed stream raises many Arrow types, and bare OSError.
+        except (pa.ArrowException, OSError) as e:
+            raise InvalidInput(f"segment {name}: {e}") from e
+        return reader.schema, batches
 
 
 def _pack(batches: list[pa.RecordBatch], cap: int) -> Iterator[list[pa.RecordBatch]]:
@@ -106,8 +123,9 @@ def _split(batch: pa.RecordBatch, cap: int) -> Iterator[pa.RecordBatch]:
         yield batch
         return
     halves = batch.slice(0, batch.num_rows // 2), batch.slice(batch.num_rows // 2)
+    sizes = [half.nbytes for half in halves]
     # A shared buffer (a dictionary) counts in full in every slice.
-    if 4 * min(half.nbytes for half in halves) > 3 * batch.nbytes:
+    if max(sizes) > cap and 4 * min(sizes) > 3 * batch.nbytes:
         yield batch
         return
     for half in halves:
@@ -115,4 +133,11 @@ def _split(batch: pa.RecordBatch, cap: int) -> Iterator[pa.RecordBatch]:
 
 
 def _create(path: Path) -> BinaryIO:
-    return open(path, "xb")  # Exclusive: never clobber a file the caller left.
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as e:
+        # Only a caller ignoring the reserved prefix can have made it.
+        raise HostIncompatible(
+            f"segment {path.name} exists; {_OUTPUT!r} is reserved"
+        ) from e
+    return os.fdopen(fd, "wb")
