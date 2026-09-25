@@ -15,7 +15,7 @@ those messages ([`transport.md`](transport.md)).
 | registry | capability declaration, param validation, schema versions | transport details |
 | capabilities | one module per scikit-bio capability | transport, JSON |
 
-A capability takes typed params and an Arrow table and returns an Arrow table. It never
+A capability takes typed params and named Arrow tables and returns one Arrow table. It never
 touches transport or JSON; it raises skb_arrow error classes for faults it anticipates
 ([`errors.md`](errors.md)).
 
@@ -24,9 +24,11 @@ touches transport or JSON; it raises skb_arrow error classes for faults it antic
 | Module | Holds |
 |---|---|
 | `cli.py` | entry point, `--version` |
-| `errors.py` | protocol layer: error classes, `classify`, `collect_warnings` |
-| `protocol.py` | `PROTOCOL_VERSION` |
-| `registry.py` | `CAPABILITIES`: name → `schema_version` |
+| `errors.py` | error classes (raised in every layer), `classify`, `collect_warnings` |
+| `protocol.py` | `PROTOCOL_VERSION`, `Session`, `handle`: one request line → one response line |
+| `transport.py` | segment `read`, `write`, `dispose`, name checks |
+| `registry.py` | `Capability`, `CAPABILITIES`, `validate` |
+| `capabilities/echo.py` | returns its input |
 
-M2 adds transport and the `echo` capability; M3 adds `ancombc`. A module becomes a package
+M2 adds the host (serving loop, fd reservation); M3 adds `ancombc`. A module becomes a package
 when it outgrows one file; imports don't change.

@@ -4,7 +4,7 @@ A capability is one curated, typed, versioned scikit-bio operation. There is no 
 generic call path (DESIGN §1).
 
 ## Contract
-- Typed params and an Arrow table in, an Arrow table out.
+- Typed params and named Arrow tables in, one Arrow table out.
 - Pure: the same request returns the same answer.
 - Knows nothing of transport or JSON ([`architecture.md`](architecture.md)).
 - Raises `InvalidInput`, `InvalidParam`, or `Unsupported` for faults it anticipates; anything
@@ -34,9 +34,12 @@ column. Differential abundance:
 A per-family rule, not a global one: other capabilities may return a single narrow table.
 
 ## Registry
-`CAPABILITIES` in `src/skb_arrow/registry.py` maps name → `schema_version`. Empty in M1. M2
-adds `echo`, which exists only to exercise the machinery; M3 adds `ancombc` and defines the
-registration template and param spec.
+`CAPABILITIES` in `src/skb_arrow/registry.py` maps name → `Capability(schema_version, inputs,
+params, run)`. A call must name exactly the declared input tables and only declared params;
+`run(tables, params)` receives them by name.
+
+`echo` (input `table`, no params) returns its input; it exists only to exercise the machinery.
+M3 adds `ancombc`, typed param specs, and the registration template.
 
 ## Open (M3)
 - `schema_version` covers only the output schema. Changing a param default — including the

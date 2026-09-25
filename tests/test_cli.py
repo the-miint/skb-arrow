@@ -6,15 +6,16 @@ from pathlib import Path
 import pytest
 
 from skb_arrow import cli, registry
+from skb_arrow.capabilities import echo
 
 PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 with PYPROJECT.open("rb") as f:
     VERSION = tomllib.load(f)["project"]["version"]
 # Protocol is pinned literally: bumping it must be a deliberate test edit.
-EXPECTED = f"skb-arrow {VERSION}\nprotocol 1\ncapabilities: none\n"
+EXPECTED = f"skb-arrow {VERSION}\nprotocol 1\ncapabilities: echo/1\n"
 
 
-def test_version_reports_package_protocol_and_empty_registry(
+def test_version_reports_package_protocol_and_capabilities(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     assert cli.main(["--version"]) == 0
@@ -24,10 +25,13 @@ def test_version_reports_package_protocol_and_empty_registry(
 def test_version_lists_capabilities_sorted_regardless_of_registration_order(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setitem(registry.CAPABILITIES, "b", 2)
-    monkeypatch.setitem(registry.CAPABILITIES, "a", 1)
+    for name, schema_version in [("b", 2), ("a", 1)]:
+        capability = registry.Capability(
+            schema_version, frozenset(), frozenset(), echo.run
+        )
+        monkeypatch.setitem(registry.CAPABILITIES, name, capability)
     cli.main(["--version"])
-    assert capsys.readouterr().out.endswith("\ncapabilities: a/1, b/2\n")
+    assert capsys.readouterr().out.endswith("\ncapabilities: a/1, b/2, echo/1\n")
 
 
 def test_installed_console_script_runs_main() -> None:

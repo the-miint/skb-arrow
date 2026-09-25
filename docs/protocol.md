@@ -1,7 +1,6 @@
 # Protocol
 
-The contract between skb-arrow and its callers. Framing and versioning are decided; message
-fields land in M2.
+The contract between skb-arrow and its callers. Implementation: `src/skb_arrow/protocol.py`.
 
 ## Channel
 - The caller runs `skb-arrow` as a child process.
@@ -28,4 +27,23 @@ Why: DESIGN §4.
 Current: `PROTOCOL_VERSION = 1` (`src/skb_arrow/protocol.py`).
 
 ## Messages
-Init handshake, request and response envelopes: M2.
+One UTF-8 JSON object per line, with a string `type`. Lines are handled one at a time; responses
+come in request order, so a caller may pipeline. Shutdown: the caller closes stdin.
+
+| `type` | | Fields |
+|---|---|---|
+| `init` | → | `protocol_version` int; `segment_bytes` int ≥ 1024, optional (default 256 MiB) |
+| `ready` | ← | `protocol_version`; `host_version` str; `capabilities` {name: `schema_version`} |
+| `call` | → | `id` str or int, optional; `capability` str; `params` object, optional; `input` {table: [segment names]} |
+| `result` | ← | `id`; `output` [segment names]; `warnings` |
+| `error` | ← | `id` (null if unknown); `kind`; `message`; `warnings`; `traceback` (`internal` only); `protocol_version` (answering `init`) |
+
+- `init` comes first, once. An int is a JSON integer, never `true`; a null field is absent.
+- `host_incompatible`, and the host keeps serving: a line that isn't a UTF-8 JSON object, an
+  unknown `type`, a missing or mistyped field, `call` before `init`, a second `init`, another
+  `protocol_version`, `segment_bytes` below 1024, an unknown capability, or a segment rule
+  broken ([`transport.md`](transport.md#segments)).
+- `invalid_param`: a param the capability doesn't declare, or input tables other than those it
+  declares ([`capabilities.md`](capabilities.md#registry)).
+- Every segment a call names is unlinked before its response; `output` is one table.
+- `warnings`: [`errors.md`](errors.md#warnings).

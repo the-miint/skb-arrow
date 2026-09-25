@@ -14,7 +14,7 @@ def main(argv: list[str] | None = None) -> int:
     if not parser.parse_args(argv).version:
         parser.print_usage(sys.stderr)
         return 2
-    caps = ", ".join(f"{n}/{v}" for n, v in sorted(registry.CAPABILITIES.items()))
+    caps = ", ".join(f"{n}/{v}" for n, v in registry.schema_versions().items())
     print(f"skb-arrow {version('skb-arrow')}")
     print(f"protocol {PROTOCOL_VERSION}")
     print(f"capabilities: {caps or 'none'}")
