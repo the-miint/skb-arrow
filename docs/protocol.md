@@ -54,7 +54,8 @@ opened every output it needs, since the host then cleans DIR
   (`NaN` and `Infinity` are not JSON), an unknown `type`, a missing or mistyped field, `call`
   before `init`, a second `init`, another `protocol_version`, `segment_bytes` below 1024, an
   unknown capability, or a segment rule broken ([`transport.md`](transport.md#segments)).
-- `invalid_param`: a param the capability doesn't declare, or input tables other than those it
+- `invalid_param`: a param the capability doesn't declare (even if null), a required param
+  missing, a mistyped param or one that breaks its rule, or input tables other than those it
   declares ([`capabilities.md`](capabilities.md#registry)).
 - Every string under a request's `input` is a segment it names. All are unlinked, whatever the
   outcome, before the capability runs. `output` is one table.

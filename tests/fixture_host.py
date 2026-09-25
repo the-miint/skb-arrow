@@ -54,9 +54,9 @@ def main() -> int:
 
     table = frozenset({"table"})
     registry.CAPABILITIES |= {
-        "noisy": registry.Capability(1, table, frozenset(), noisy),
-        "fail": registry.Capability(1, table, frozenset({"kind"}), fail),
-        "dies": registry.Capability(1, table, frozenset(), dies),
+        "noisy": registry.Capability(1, table, {}, noisy),
+        "fail": registry.Capability(1, table, {"kind": registry.Param(str)}, fail),
+        "dies": registry.Capability(1, table, {}, dies),
     }
     handle = protocol.handle
 

@@ -27,7 +27,7 @@ def test_version_lists_capabilities_sorted_regardless_of_registration_order(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registered = {
-        name: registry.Capability(schema_version, frozenset(), frozenset(), echo.run)
+        name: registry.Capability(schema_version, frozenset(), {}, echo.run)
         for name, schema_version in [("b", 2), ("a", 1)]
     }
     monkeypatch.setattr(registry, "CAPABILITIES", registered)

@@ -113,7 +113,9 @@ def _prepare(
             )
     transport.check_names(name for names in inputs.values() for name in names)
     params = _field(request, "params", dict, default={})
-    capability = registry.validate(_field(request, "capability", str), inputs, params)
+    capability, params = registry.validate(
+        _field(request, "capability", str), inputs, params
+    )
     tables = {t: transport.read(session.directory, s) for t, s in inputs.items()}
     return capability, tables, params
 

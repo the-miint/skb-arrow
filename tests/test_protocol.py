@@ -40,9 +40,13 @@ def put(directory: Path, name: str, table: pa.Table = TABLE) -> str:
 
 
 def register(
-    monkeypatch: pytest.MonkeyPatch, name: str, run: Run, inputs: tuple[str, ...]
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    run: Run,
+    inputs: tuple[str, ...],
+    params: Mapping[str, registry.Param] = {},
 ) -> None:
-    capability = registry.Capability(1, frozenset(inputs), frozenset(), run)
+    capability = registry.Capability(1, frozenset(inputs), params, run)
     monkeypatch.setitem(registry.CAPABILITIES, name, capability)
 
 
@@ -238,6 +242,22 @@ def test_named_tables_reach_the_capability_by_name(
     assert output.to_pydict() == {"left": [1, 2], "right": [3, 4]}
 
 
+def test_run_receives_every_param_resolved(
+    session: protocol.Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+
+    def run(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+        seen.update(params)
+        return tables["table"]
+
+    params = {"a": registry.Param(float, 0.5), "b": registry.Param(str)}
+    register(monkeypatch, "probe", run, ("table",), params)
+    message = call({"table": [put(session.directory, "a")]}, "probe", params={"b": "x"})
+    assert send(session, message)["type"] == "result"
+    assert seen == {"a": 0.5, "b": "x"}
+
+
 @pytest.mark.parametrize("ident", ["x", 7])
 def test_the_id_is_echoed_on_results_and_errors(
     session: protocol.Session, ident: str | int
@@ -283,6 +303,10 @@ REJECTED = {
     "bool id": (call({"table": ["a", "b"]}, id=True), "host_incompatible"),
     "list id": (call({"table": ["a", "b"]}, id=[1]), "host_incompatible"),
     "unknown param": (call({"table": ["a", "b"]}, params={"seed": 1}), "invalid_param"),
+    "mistyped param": (
+        call({"table": ["a", "b"]}, "fail", params={"n": "1"}),
+        "invalid_param",
+    ),
     "other inputs": (call({"left": ["a"], "table": ["b"]}), "invalid_param"),
     "bad name": (call({"table": ["a", "b", "../c"]}), "host_incompatible"),
     "non-string name": (call({"table": ["a", "b", 5]}), "host_incompatible"),
@@ -306,7 +330,7 @@ def test_a_rejected_call_disposes_every_segment_it_names(
     kind: str,
 ) -> None:
     register(monkeypatch, "pair", pair, ("left", "right"))
-    register(monkeypatch, "fail", fail, ("table",))
+    register(monkeypatch, "fail", fail, ("table",), {"n": registry.Param(int, 0)})
     for name in ["a", "b"]:
         put(session.directory, name)
     assert send(session, message)["kind"] == kind
