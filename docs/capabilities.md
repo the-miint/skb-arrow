@@ -12,6 +12,34 @@ generic call path (DESIGN §1).
 - Imports its libraries at module level, so their warning filters persist across calls.
 - Declares a `schema_version` ([versioning](#versioning)).
 
+## Input tables
+Contracts shared by capabilities (`src/skb_arrow/capabilities/_tables.py`), checked before any
+scikit-bio code runs. A violation is `invalid_input`, counted and shown by example:
+`table: 3 of 40 cells are not positive and finite, e.g. ('s1', 'f2'), ('s1', 'f7'), ('s4', 'f2')`.
+At most 5 examples, in sorted order.
+
+**IDs** (`sample_id`, `feature_id`): integers or strings (dictionary-encoded, `large_string`,
+and `string_view` included), normalized to `int64` or `string`. Never null.
+
+**Feature table**, long: columns exactly `sample_id`, `feature_id`, `value`, in any order.
+- `value` is integers or floating point, never null. Decimal is rejected: cast it to DOUBLE.
+- At least one row, and each (`sample_id`, `feature_id`) pair at most once.
+- Densified to a samples × features matrix: an absent pair is 0, then `pseudocount` is added
+  to every cell. Every cell must then be finite and positive. (A non-negative variant arrives
+  with its first consumer, M6.)
+- Samples and features are sorted ascending, so an answer never depends on row order. The
+  matrix is float64 in Fortran order, a pandas DataFrame's layout, so results match a direct
+  scikit-bio call bit for bit.
+
+**Sample metadata**, wide: a `sample_id` column holding the table's kind of ID, each sample at
+most once, and covariate columns.
+- Every sample in the table must appear; other samples are dropped before any other check.
+- Covariates are booleans, integers, floating point, strings, or dictionaries of strings.
+  patsy treats booleans and strings as categorical with levels sorted, and a dictionary as
+  categorical in dictionary order: the first value in use is the reference level (a DuckDB ENUM
+  sets it). Unused values are dropped; every chunk carries the same dictionary, without repeats.
+- No covariate is null, NaN, or infinite for a sample in the table.
+
 ## Seeds
 Why: DESIGN §3.7.
 

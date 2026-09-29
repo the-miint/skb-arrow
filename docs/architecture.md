@@ -30,6 +30,7 @@ touches transport or JSON; it raises skb_arrow error classes for faults it antic
 | `transport.py` | segment `read`, `write`, `dispose`, name checks |
 | `registry.py` | `Capability`, `CAPABILITIES`, `validate` |
 | `capabilities/echo.py` | returns its input |
+| `capabilities/_tables.py` | input-table contracts shared by capabilities |
 
 M3 adds `ancombc`. A module becomes a package
 when it outgrows one file; imports don't change.
