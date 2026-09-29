@@ -15,7 +15,6 @@ PROTOCOL_VERSION = 1
 _DEFAULT_SEGMENT_BYTES = 256 << 20
 _MIN_SEGMENT_BYTES = 1024
 _ID_TYPES = (str, int)
-_JSON_TYPES = {str: "a string", int: "an integer", dict: "an object", list: "an array"}
 _REQUIRED = object()
 
 
@@ -160,6 +159,6 @@ def _field(
             raise HostIncompatible(f"missing field {key!r}")
         return default
     if type(value) not in types:
-        expected = " or ".join(_JSON_TYPES[t] for t in types)
+        expected = " or ".join(registry.JSON_TYPES[t] for t in types)
         raise HostIncompatible(f"field {key!r} must be {expected}")
     return value

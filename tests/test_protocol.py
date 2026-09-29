@@ -258,6 +258,15 @@ def test_run_receives_every_param_resolved(
     assert seen == {"a": 0.5, "b": "x"}
 
 
+def test_params_are_checked_before_any_segment_is_read(
+    session: protocol.Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    register(monkeypatch, "typed", pair, ("table",), {"n": registry.Param(int)})
+    (session.directory / "a").write_bytes(b"not arrow")
+    message = call({"table": ["a"]}, "typed", params={"n": "1"})
+    assert send(session, message)["message"] == "typed param 'n' must be an integer"
+
+
 @pytest.mark.parametrize("ident", ["x", 7])
 def test_the_id_is_echoed_on_results_and_errors(
     session: protocol.Session, ident: str | int

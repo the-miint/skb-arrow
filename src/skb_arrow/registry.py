@@ -1,4 +1,5 @@
-import sys
+import copy
+import math
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -8,16 +9,43 @@ import pyarrow as pa
 from skb_arrow.capabilities import echo
 from skb_arrow.errors import HostIncompatible, InvalidParam
 
+# Every JSON type, as messages name it; `float` is a number.
+JSON_TYPES = {
+    str: "a string",
+    int: "an integer",
+    float: "a number",
+    bool: "a boolean",
+    list: "an array",
+    dict: "an object",
+}
+_SCALARS = {str, int, float, bool}
+_INT64 = range(-(2**63), 2**63)
 _REQUIRED = object()
-_TYPES = {str: "a string", int: "an integer", list: "an array"}
 
 
 @dataclass(frozen=True)
 class Param:
-    type: type  # its JSON type; `float` is a number
+    kind: type  # a JSON scalar type, or `list`
     default: object = _REQUIRED
     valid: Callable[[Any], bool] | None = None
     rule: str = ""  # what `valid` requires: completes "must be …"
+    item: type | None = None  # a `list`'s scalar type
+
+    def __post_init__(self) -> None:
+        # So a bad declaration fails at import, not on some call.
+        if self.kind not in _SCALARS | {list} or (self.kind is list) != (
+            self.item in _SCALARS
+        ):
+            raise TypeError("a param is a JSON scalar, or an array of one")
+        if self.valid is not None and not self.rule:
+            raise ValueError("a param's `valid` needs a `rule`")
+        if self.default is not _REQUIRED:
+            try:
+                resolved = _resolve(f"default {self.default!r}", self, self.default)
+            except InvalidParam as e:
+                raise ValueError(str(e)) from e
+            if type(resolved) is not type(self.default) or resolved != self.default:
+                raise TypeError(f"default {self.default!r} must be as resolved")
 
 
 @dataclass(frozen=True)
@@ -26,9 +54,6 @@ class Capability:
     inputs: frozenset[str]
     params: Mapping[str, Param]
     run: Callable[[Mapping[str, pa.Table], Mapping[str, Any]], pa.Table]
-
-
-CAPABILITIES = {"echo": Capability(1, frozenset({"table"}), {}, echo.run)}
 
 
 def validate(
@@ -44,36 +69,57 @@ def validate(
         raise InvalidParam(
             f"{name} takes inputs: {', '.join(sorted(capability.inputs))}"
         )
-    given = {key: value for key, value in params.items() if value is not None}
     return capability, {
-        key: _resolve(f"{name} param {key!r}", param, given.get(key, _REQUIRED))
+        key: _resolve(f"{name} param {key!r}", param, params.get(key))
         for key, param in capability.params.items()
     }
 
 
+def schema_versions() -> dict[str, int]:
+    return {name: c.schema_version for name, c in sorted(CAPABILITIES.items())}
+
+
 def _resolve(what: str, param: Param, value: object) -> object:
-    if value is _REQUIRED:
+    """`value` checked against `param`; null, like absent, gives the default."""
+    if value is None:
         if param.default is _REQUIRED:
             raise InvalidParam(f"{what} is required")
-        return param.default
-    if param.type is float:
-        value = _number(what, value)
-    elif type(value) is not param.type:
-        raise InvalidParam(f"{what} must be {_TYPES[param.type]}")
+        return copy.deepcopy(param.default)  # a run can't alter later calls'
+    if param.item is None:
+        value = _scalar(what, param.kind, value)
+    elif type(value) is list:
+        value = [
+            _scalar(f"{what} item {i}", param.item, v) for i, v in enumerate(value)
+        ]
+    else:
+        raise InvalidParam(f"{what} must be {JSON_TYPES[list]}")
     if param.valid is not None and not param.valid(value):
         raise InvalidParam(f"{what} must be {param.rule}")
+    return value
+
+
+def _scalar(what: str, kind: type, value: object) -> object:
+    if kind is float:
+        return _number(what, value)
+    if type(value) is not kind:
+        raise InvalidParam(f"{what} must be {JSON_TYPES[kind]}")
+    if kind is int and value not in _INT64:
+        raise InvalidParam(f"{what} must be a 64-bit integer")
     return value
 
 
 def _number(what: str, value: object) -> float:
     """`value` as a finite float: any JSON number, integers included."""
     if isinstance(value, bool) or not isinstance(value, int | float):
-        raise InvalidParam(f"{what} must be a number")
-    # Compared exactly, before float() could overflow on a huge integer.
-    if not abs(value) <= sys.float_info.max:
+        raise InvalidParam(f"{what} must be {JSON_TYPES[float]}")
+    try:
+        number = float(value)
+    except OverflowError:  # an integer beyond float range
+        number = math.inf
+    if not math.isfinite(number):
         raise InvalidParam(f"{what} must be a finite number")
-    return float(value)
+    return number
 
 
-def schema_versions() -> dict[str, int]:
-    return {name: c.schema_version for name, c in sorted(CAPABILITIES.items())}
+# Last: declaring a Param resolves its default.
+CAPABILITIES = {"echo": Capability(1, frozenset({"table"}), {}, echo.run)}

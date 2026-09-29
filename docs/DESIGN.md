@@ -228,6 +228,15 @@ init handshake, so drift fails immediately rather than as garbled batches later;
 per-capability `schema_version`; minimum-version gating; and forward-compatible handling of
 unknowns in both directions. Rules: [`protocol.md`](protocol.md#versioning).
 
+**Revised in M3** (M3 Phase 1 review): `schema_version` covers a capability's whole interface
+— inputs, params with their defaults and accepted values, output schema — and every change
+bumps it, additions included. A changed default changes answers as surely as a changed column,
+the default seed most sharply. And minimum-version gating only works if a caller can learn
+that a param it sends exists: under "additions need no bump", a caller sending a new param to
+an older host with the same version gets `invalid_param`. The implementation is
+`host_version`'s, with the libraries that compute answers pinned exactly. Rules:
+[`capabilities.md`](capabilities.md#versioning).
+
 ---
 
 ## 5. Milestones

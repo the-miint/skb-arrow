@@ -35,29 +35,38 @@ A per-family rule, not a global one: other capabilities may return a single narr
 
 ## Registry
 `CAPABILITIES` in `src/skb_arrow/registry.py` maps name → `Capability(schema_version, inputs,
-params, run)`; `params` maps each name to `Param(type, default, valid, rule)`. Before any input
-is read, a call is checked in this order:
+params, run)`; `params` maps each name to `Param(kind, default, valid, rule, item)`. Before any
+input is read, a call is checked in this order:
 1. The capability exists, else `host_incompatible`.
 2. Every param name is declared, even one whose value is null.
 3. The input tables are exactly those declared.
-4. Null values are dropped: null is absent.
-5. Every param without a default is present.
-6. Each value has the declared JSON type exactly: `true` is never an integer. A number
-   (`float`) also takes an integer, and must convert to a finite float (`1e400` does not).
-7. Each value passes `valid`; `rule` says what it requires.
+4. Then each param in turn, in declaration order:
+   1. Present, unless it has a default. Null is absent.
+   2. Of the declared JSON type exactly: `true` is never an integer. An integer fits 64 bits.
+      A number (`float`) also takes an integer, and must convert to a finite float (`1e400`
+      does not). An array (`list`) holds items of its `item` type.
+   3. Passes `valid`; `rule` says what it requires.
 
 Failures from 2 on are `invalid_param`: `unknown echo params: x`, `echo takes inputs: table`,
-`ancombc param 'formula' is required`, `… must be a number`, `… must be in (0, 1)`.
-`run(tables, params)` receives the tables by name and every declared param, defaults filled.
+`ancombc param 'formula' is required`, `… must be a number`, `… item 1 must be a string`,
+`… must be in (0, 1)`. `run(tables, params)` receives the tables by name and every declared
+param, defaults filled; each call gets its own copy of a default.
+
+A declaration is checked on import: `kind` is a JSON scalar type, or `list` with a scalar
+`item`; `valid` comes with a `rule`; a default is a value the param would accept, already
+resolved (a number's default is a float).
 
 `echo` (input `table`, no params) returns its input; it exists only to exercise the machinery.
 
 ## Versioning
-`schema_version` covers a capability's interface: its input tables and their contracts; its
-params' names, types, defaults, and accepted values; its output schema. Bump it on any change
-that could reject a request or change its answer. A new optional param whose default keeps
-today's behaviour, or a newly accepted value, needs none.
+Why: DESIGN §4.
 
-`host_version` covers the implementation. Dependencies are pinned exactly
-([`pyproject.toml`](../pyproject.toml)), so an answer is reproducible per `host_version`: bit
-for bit on the same machine and BLAS thread count, to floating-point tolerance across them.
+`schema_version` covers a capability's interface: its input tables and their contracts; its
+params' names, types, defaults, and accepted values; its output schema. Every change to it
+bumps the version, additions included, so a caller can require what it uses.
+
+`host_version` covers the implementation. The libraries that compute answers (scikit-bio,
+numpy, scipy, pandas, patsy) are pinned exactly ([`pyproject.toml`](../pyproject.toml)), so an
+answer is reproducible per `host_version`: bit for bit on the same machine and BLAS thread
+count, to floating-point tolerance across them. Other dependencies resolve at install; whether
+releases pin them is M5's.
