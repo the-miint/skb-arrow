@@ -22,10 +22,11 @@ At most 5 examples, in sorted order.
 and `string_view` included), normalized to `int64` or `string`. Never null.
 
 **Feature table**, long: columns exactly `sample_id`, `feature_id`, `value`, in any order.
-- `value` is integers or floating point, never null. Decimal is rejected: cast it to DOUBLE.
+- `value` is integers or floating point, never null or negative. Decimal is rejected: cast it
+  to DOUBLE. Values become float64, so an integer above 2**53 rounds.
 - At least one row, and each (`sample_id`, `feature_id`) pair at most once.
 - Densified to a samples × features matrix: an absent pair is 0, then `pseudocount` is added
-  to every cell. Every cell must then be finite and positive. (A non-negative variant arrives
+  to every cell. Every cell must then be finite and positive. (A variant allowing zeros arrives
   with its first consumer, M6.)
 - Samples and features are sorted ascending, so an answer never depends on row order. The
   matrix is float64 in Fortran order, a pandas DataFrame's layout, so results match a direct
@@ -33,11 +34,14 @@ and `string_view` included), normalized to `int64` or `string`. Never null.
 
 **Sample metadata**, wide: a `sample_id` column holding the table's kind of ID, each sample at
 most once, and covariate columns.
-- Every sample in the table must appear; other samples are dropped before any other check.
+- Every sample in the table must appear, and other samples are dropped. Every row's
+  `sample_id` is checked, and each column's type; covariate values only for the table's
+  samples.
 - Covariates are booleans, integers, floating point, strings, or dictionaries of strings.
   patsy treats booleans and strings as categorical with levels sorted, and a dictionary as
   categorical in dictionary order: the first value in use is the reference level (a DuckDB ENUM
-  sets it). Unused values are dropped; every chunk carries the same dictionary, without repeats.
+  sets it). Unused values are dropped; every chunk carries the same dictionary, without repeats
+  or nulls.
 - No covariate is null, NaN, or infinite for a sample in the table.
 
 ## Seeds

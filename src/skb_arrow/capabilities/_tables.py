@@ -1,6 +1,8 @@
 """Input-table contracts shared by capabilities (docs/capabilities.md#input-tables)."""
 
-from collections.abc import Iterable, Mapping
+import itertools
+from collections import Counter
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -15,21 +17,20 @@ _COLUMNS = ["sample_id", "feature_id", "value"]
 _SHOWN = 5
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)  # its arrays have no single truth value
 class FeatureTable:
     matrix: npt.NDArray[np.float64]  # samples × features, Fortran order
     samples: pa.Array  # sorted, normalized IDs
     features: pa.Array
 
 
-def feature_table(
-    tables: Mapping[str, pa.Table], name: str, *, pseudocount: float
-) -> FeatureTable:
+def feature_table(name: str, table: pa.Table, *, pseudocount: float) -> FeatureTable:
     """Input `name` as a strictly positive dense matrix, once it keeps the contract."""
-    table = tables[name]
     if sorted(table.column_names) != sorted(_COLUMNS):
-        got = ", ".join(table.column_names)
-        raise InvalidInput(f"{name}: columns must be {', '.join(_COLUMNS)}; got {got}")
+        raise InvalidInput(
+            f"{name}: columns must be {', '.join(_COLUMNS)}; "
+            f"got {_names(table.column_names)}"
+        )
     sample, feature = (_ids(name, table, column) for column in _COLUMNS[:2])
     value = table["value"]
     if not (pa.types.is_integer(value.type) or pa.types.is_floating(value.type)):
@@ -43,77 +44,77 @@ def feature_table(
     columns = pc.index_in(feature, value_set=features).to_numpy()
     cells = rows.astype(np.int64) * len(features) + columns
 
-    def pairs(codes: Iterable[int]) -> list[tuple[object, object]]:
-        cells = [divmod(int(code), len(features)) for code in codes]
-        return [(samples[r].as_py(), features[c].as_py()) for r, c in cells]
+    def pairs(codes: Iterable[int]) -> Iterator[tuple[object, object]]:
+        for code in codes:
+            r, c = divmod(int(code), len(features))
+            yield samples[r].as_py(), features[c].as_py()
 
     if nulls := value.null_count:
         where = np.sort(cells[value.is_null().to_numpy(zero_copy_only=False)])
         raise _offence(
-            name,
-            f"value is null in {nulls} of {table.num_rows} rows",
-            pairs(where[:_SHOWN]),
+            name, f"value is null in {nulls} of {table.num_rows} rows", pairs(where)
         )
     codes, counts = np.unique(cells, return_counts=True)
     if (repeats := codes[counts > 1]).size:
         raise _offence(
             name,
             f"{repeats.size} of {codes.size} (sample_id, feature_id) pairs repeat",
-            pairs(repeats[:_SHOWN]),
+            pairs(repeats),
+        )
+    values = value.to_numpy()
+    if (negative := np.sort(cells[values < 0])).size:
+        raise _offence(
+            name,
+            f"{negative.size} of {table.num_rows} values are negative",
+            pairs(negative),
         )
 
     matrix = np.zeros((len(samples), len(features)), order="F")
-    matrix[rows, columns] = value.to_numpy()
-    matrix += pseudocount
+    matrix[rows, columns] = values
+    with np.errstate(over="ignore"):  # a cell overflowing to inf is reported below
+        matrix += pseudocount
     bad = ~(np.isfinite(matrix) & (matrix > 0))
     if count := int(bad.sum()):
-        shown: list[int] = []
-        for r in range(len(samples)):  # stops at the first few
-            shown += [r * len(features) + int(c) for c in np.flatnonzero(bad[r])]
-            if len(shown) >= _SHOWN:
-                break
         raise _offence(
             name,
             f"{count} of {matrix.size} cells are not positive and finite",
-            pairs(shown[:_SHOWN]),
+            pairs(_true_cells(bad)),
         )
     return FeatureTable(matrix, samples, features)
 
 
-def sample_metadata(
-    tables: Mapping[str, pa.Table], name: str, samples: pa.Array
-) -> pd.DataFrame:
+def sample_metadata(name: str, table: pa.Table, samples: pa.Array) -> pd.DataFrame:
     """Input `name`'s covariates for `samples`, in their order, indexed by ID."""
-    table = tables[name]
     if table.column_names.count("sample_id") != 1:
-        raise InvalidInput(f"{name}: needs exactly one sample_id column")
+        raise InvalidInput(
+            f"{name}: needs exactly one sample_id column; "
+            f"got {_names(table.column_names)}"
+        )
     covariates = [c for c in table.column_names if c != "sample_id"]
-    for column in covariates:
-        if covariates.count(column) > 1:
-            raise InvalidInput(f"{name}: column {column!r} appears twice")
+    if repeated := [c for c, n in Counter(covariates).items() if n > 1]:
+        raise InvalidInput(f"{name}: column {repeated[0]!r} appears twice")
     values = pa.table({c: _covariate(name, c, table[c]) for c in covariates})
     ids = _ids(name, table, "sample_id")
     if ids.type != samples.type:
         raise InvalidInput(
             f"{name}: sample_id is {ids.type}, the table's is {samples.type}"
         )
-    distinct = _sorted_unique(ids)
-    if len(distinct) < len(ids):
-        counts = pc.value_counts(ids)
+    counts = pc.value_counts(ids)
+    if len(counts) < len(ids):
         repeats = pc.filter(
             counts.field("values"), pc.greater(counts.field("counts"), 1)
         )
         raise _offence(
             name,
-            f"{len(repeats)} of {len(distinct)} sample_ids repeat",
-            _sorted_unique(repeats).to_pylist(),
+            f"{len(repeats)} of {len(counts)} sample_ids repeat",
+            sorted(repeats.to_pylist()),
         )
     positions = pc.index_in(samples, value_set=ids)
     if missing := positions.null_count:
         raise _offence(
             name,
             f"{missing} of {len(samples)} table samples are missing",
-            samples.filter(positions.is_null()).to_pylist(),
+            sorted(samples.filter(positions.is_null()).to_pylist()),
         )
     aligned = values.take(positions)
     frame = aligned.to_pandas()
@@ -168,6 +169,11 @@ def _covariate(name: str, column: str, values: pa.ChunkedArray) -> pa.ChunkedArr
             )
         if dictionaries and len(pc.unique(dictionaries[0])) < len(dictionaries[0]):
             raise InvalidInput(f"{name}: column {column!r} repeats a dictionary value")
+        if dictionaries and dictionaries[0].null_count:
+            # Arrow's null checks see only indices, so this would reach pandas.
+            raise InvalidInput(
+                f"{name}: column {column!r} has a null in its dictionary"
+            )
         return values
     if not (
         pa.types.is_boolean(kind)
@@ -194,10 +200,22 @@ def _check_defined(
         raise _offence(
             name,
             f"column {column!r} is {problem} for {count} of {len(samples)} samples",
-            samples.filter(undefined).to_pylist(),
+            sorted(samples.filter(undefined).to_pylist()),
         )
 
 
+def _true_cells(mask: npt.NDArray[np.bool_]) -> Iterator[int]:
+    """Codes of `mask`'s true cells, in row order."""
+    # A row at a time: np.nonzero would index every true cell at once, 16 bytes each.
+    for r, row in enumerate(mask):
+        for c in np.flatnonzero(row):
+            yield r * mask.shape[1] + int(c)
+
+
+def _names(columns: Iterable[str]) -> str:
+    return ", ".join(repr(c) for c in columns)
+
+
 def _offence(name: str, problem: str, examples: Iterable[object]) -> InvalidInput:
-    shown = ", ".join(repr(e) for e in list(examples)[:_SHOWN])
+    shown = ", ".join(repr(e) for e in itertools.islice(examples, _SHOWN))
     return InvalidInput(f"{name}: {problem}, e.g. {shown}")

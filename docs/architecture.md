@@ -13,7 +13,7 @@ those messages ([`transport.md`](transport.md)).
 | transport | mmap'd segments, chunking, Arrow IPC encode/decode, unlink-after-open | capabilities, scikit-bio |
 | protocol | envelopes, init handshake, versioning, error taxonomy | scikit-bio |
 | registry | capability declaration, param validation, schema versions | transport details |
-| capabilities | one module per scikit-bio capability | transport, JSON |
+| capabilities | one module per scikit-bio capability, plus shared input contracts | transport, JSON |
 
 A capability takes typed params and named Arrow tables and returns one Arrow table. It never
 touches transport or JSON; it raises skb_arrow error classes for faults it anticipates
