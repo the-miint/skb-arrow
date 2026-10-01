@@ -9,6 +9,8 @@ import pyarrow as pa
 import pytest
 from client import FIXTURE, INIT, SKB_ARROW, Client
 
+from skb_arrow import registry
+
 TABLE = pa.table({"a": pa.array(range(1000), pa.int64())})
 
 
@@ -46,7 +48,8 @@ def test_echo_round_trips_segments_and_shutdown_removes_dir(
     connect: Callable[..., Client], directory: Path
 ) -> None:
     client = connect(SKB_ARROW)
-    assert client.send(INIT | {"segment_bytes": 1024})["capabilities"] == {"echo": 1}
+    ready = client.send(INIT | {"segment_bytes": 1024})
+    assert ready["capabilities"] == registry.schema_versions()
     names = [client.put(f"in-{i}", TABLE.slice(i * 250, 250)) for i in range(4)]
     result = client.send(call("echo", "unused") | {"input": {"table": names}})
     assert len(result["output"]) == 8

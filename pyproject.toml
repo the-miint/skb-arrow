@@ -13,7 +13,10 @@ authors = [{ name = "Daniel McDonald", email = "damcdonald@ucsd.edu" }]
 dependencies = [
     "numpy==2.5.3",
     "pandas==3.0.6",
+    "patsy==1.0.3",
     "pyarrow==25.0.1",
+    "scikit-bio==0.7.4",
+    "scipy==1.18.1",
 ]
 
 [project.scripts]
@@ -35,7 +38,7 @@ files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
 # These ship no type information.
-module = ["pandas.*", "pyarrow.*"]
+module = ["pandas.*", "patsy.*", "pyarrow.*", "skbio.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

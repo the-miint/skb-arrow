@@ -44,6 +44,69 @@ most once, and covariate columns.
   or nulls.
 - No covariate is null, NaN, or infinite for a sample in the table.
 
+## Formulas
+Why: DESIGN §3.11.
+
+patsy runs a formula's terms as Python, so a formula is checked before patsy evaluates it:
+- It parses, has no left-hand side (`y ~ a`), and has at least one term (`0` alone has none).
+- Every factor is a metadata column's bare name: a Python identifier, not a keyword or
+  `__debug__`, that NFKC normalization leaves unchanged (Python reads `ｔａｂｌｅ` as `table`).
+- Operators `+ - * : / **` and `0`/`1` are allowed; calls are not (`log(age)`, `C(bmi)`,
+  `Q('a b')`). Transform and rename in the caller; set a reference level by dictionary order.
+
+A failure is `invalid_param`.
+
+## ancombc
+scikit-bio 0.7.4's `ancombc`, with its post-hoc tests. `schema_version` 1.
+
+Inputs: `table`, a feature table; `metadata`, its sample metadata ([input tables](#input-tables)).
+
+| Param | Type | Default | Accepts |
+|---|---|---|---|
+| `formula` | string | required | a [formula](#formulas) |
+| `grouping` | string | none | see below |
+| `posthoc` | array of strings | `[]` | distinct: `global`, `pairwise`, `dunnett` |
+| `pseudocount` | number | 0 | ≥ 0 |
+| `max_iter` | integer | 100 | ≥ 1 |
+| `tol` | number | 1e-5 | > 0 |
+| `alpha` | number | 0.05 | in (0, 1) |
+| `p_adjust` | string | `holm` | `holm`, `bonferroni`, `bh`, `by` |
+| `bootstraps` | integer | 100 | ≥ 1; `dunnett` only |
+| `seed` | integer | 0 | ≥ 0; `dunnett` only |
+
+- `grouping` is the covariate that post-hoc tests compare, and `posthoc` needs it. It must be a
+  metadata column that is categorical (strings, a dictionary, or booleans), a term of its own
+  in `formula`, which has an intercept; each is `invalid_param`. It must have at least three
+  groups among the table's samples, or scikit-bio raises `invalid_input`.
+- `p_adjust` offers scikit-bio's own methods only: the statsmodels ones fail on the fractional
+  family sizes of the post-hoc tests' correction.
+- The table contract admits no zero cell, so a table with zeros needs a `pseudocount`
+  (the R package's tutorial uses 1).
+
+Output, ordered by `test` (`main`, then `posthoc`'s in the order `global`, `pairwise`,
+`dunnett`), then feature, then term:
+
+| Field | Type | Null |
+|---|---|---|
+| `feature_id` | the table's, normalized | never |
+| `test` | string | never |
+| `term` | string | for `global` |
+| `lfc`, `se` | double | for `global` |
+| `w`, `pvalue`, `qvalue` | double | never |
+| `signif` | boolean | never |
+
+- `main`: a row per feature and design column (`Intercept`, `region[T.NE]`, `age`).
+- `pairwise`: each `grouping` column against the reference level, then each pair of them
+  (`bmi[T.obese]_bmi[T.overweight]`, obese minus overweight). `dunnett`: each against the
+  reference.
+- `lfc` is a natural-log fold change.
+- NULL means not applicable. NaN and ±inf are scikit-bio's, passed through as IEEE values.
+  Nothing flags a coefficient the data can't estimate: a collinear design yields finite
+  pseudo-inverse numbers.
+- `pairwise` and `dunnett` correct across features screened by a global test first: a feature
+  it drops has `pvalue` 1.
+- `dunnett` is the only stochastic test.
+
 ## Seeds
 Why: DESIGN §3.7.
 
@@ -73,7 +136,8 @@ input is read, a call is checked in this order:
 2. Every param name is declared, even one whose value is null.
 3. The input tables are exactly those declared.
 4. Then each param in turn, in declaration order:
-   1. Present, unless it has a default. Null is absent.
+   1. Present, unless it has a default. Null is absent. A null default makes a param
+      optional with no value: `run` gets `None`.
    2. Of the declared JSON type exactly: `true` is never an integer. An integer fits 64 bits.
       A number (`float`) also takes an integer, and must convert to a finite float (`1e400`
       does not). An array (`list`) holds items of its `item` type.

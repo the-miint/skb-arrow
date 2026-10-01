@@ -6,7 +6,7 @@ from typing import Any
 
 import pyarrow as pa
 
-from skb_arrow.capabilities import echo
+from skb_arrow.capabilities import ancombc, echo
 from skb_arrow.errors import HostIncompatible, InvalidParam
 
 # Every JSON type, as messages name it; `float` is a number.
@@ -122,4 +122,34 @@ def _number(what: str, value: object) -> float:
 
 
 # Last: declaring a Param resolves its default.
-CAPABILITIES = {"echo": Capability(1, frozenset({"table"}), {}, echo.run)}
+CAPABILITIES = {
+    "ancombc": Capability(
+        1,
+        frozenset({"table", "metadata"}),
+        {
+            "formula": Param(str),  # checked against the metadata, in run
+            "grouping": Param(str, None),  # likewise
+            "posthoc": Param(
+                list,
+                [],
+                lambda v: len(set(v)) == len(v) and set(v) <= set(ancombc.POSTHOC),
+                f"distinct, each one of {', '.join(ancombc.POSTHOC)}",
+                item=str,
+            ),
+            "pseudocount": Param(float, 0.0, lambda v: v >= 0, "at least 0"),
+            "max_iter": Param(int, 100, lambda v: v >= 1, "at least 1"),
+            "tol": Param(float, 1e-5, lambda v: v > 0, "positive"),
+            "alpha": Param(float, 0.05, lambda v: 0 < v < 1, "in (0, 1)"),
+            "p_adjust": Param(
+                str,
+                "holm",
+                lambda v: v in ancombc.P_ADJUST,
+                f"one of {', '.join(ancombc.P_ADJUST)}",
+            ),
+            "bootstraps": Param(int, 100, lambda v: v >= 1, "at least 1"),
+            "seed": Param(int, 0, lambda v: v >= 0, "at least 0"),
+        },
+        ancombc.run,
+    ),
+    "echo": Capability(1, frozenset({"table"}), {}, echo.run),
+}

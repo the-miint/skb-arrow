@@ -211,6 +211,14 @@ array-API/GPU-capable functions are the eight composition transforms, and the ca
 implements those natively. Because tiering is an install-time concern, adding them later
 changes no architecture.
 
+**Revised in M3** (measured with scikit-bio 0.7.4, Linux x86_64): something does build from
+source. biom-format, a hard scikit-bio dependency, has no cp314 wheels (2.1.17, the latest),
+so every install compiles it and needs a C compiler; CI has one. Wheels upstream or a compiler
+policy is due before M5. The runtime install is 522 MB, not ~124 MB. Importing
+`skbio.stats.composition` takes 0.37 s warm and 1.1 s cold, paid by every host start and
+`--version`. The libraries that compute answers are pinned exactly
+([`capabilities.md`](capabilities.md#versioning)).
+
 ### 3.10 Result shapes: unify a family into one long table
 
 One table with a discriminator column, rather than multiple outputs, where scikit-bio returns
@@ -218,6 +226,38 @@ several related frames. For differential abundance this covers `ancombc`'s two f
 and extends to `ancombc2`'s post-hoc tests without a new shape. The one wrinkle — `w` changes
 meaning with `test` — is accepted: the R package has the same property. A per-family
 judgement, not a global rule. Schema: [`capabilities.md`](capabilities.md#result-shapes).
+
+### 3.11 Formulas: bare column names only
+
+patsy evaluates a formula's factors, the left-hand side included, as Python in scikit-bio's
+frame: `__import__('os').getpid()` in a formula ran inside `ancombc` (reproduced, scikit-bio
+0.7.4, patsy 1.0.3). That is the `eval` §1 rules out. `ModelDesc.from_formula` parses without
+evaluating anything, left-hand-side payloads included (verified), so a formula is checked
+there first.
+
+Name lookup puts the data first: a column named `np`, `table`, `len`, `C`, or `center` wins
+over scikit-bio's locals, builtins, and patsy's helpers (verified). What slips past a bare
+name: Python NFKC-normalizes identifiers, so a column `ｔａｂｌｅ` resolved to scikit-bio's local
+`table` and silently fit the feature matrix as 21 covariates (reproduced); `__debug__` and
+keywords are constants; and `table` with no such column also fits that local. Hence a
+factor must be a normalized identifier naming a metadata column. The cost is transforms and
+`C()` contrasts, which a caller computes in SQL, setting a reference level by dictionary
+order. Rules: [`capabilities.md`](capabilities.md#formulas).
+
+### 3.12 Feature tables: long, densified by the host, sorted, Fortran order
+
+A caller holds a sparse table long, `(sample_id, feature_id, value)`, as SQL does. Densifying
+in the caller, only to have it reshape the answer back, is work every caller would repeat, so
+the host densifies: an absent cell is 0, and `pseudocount` is added to every cell.
+
+Exact parity with a direct scikit-bio call depends on layout. On the Atlas data, a C-ordered
+float64 matrix differed from the natural DataFrame call by up to 3e-9; a Fortran-ordered one,
+a single-block DataFrame's layout, matched bit for bit, as int64 or float64. Sample and feature
+order moved results by about 4e-10, so both are sorted and SQL row order cannot change an
+answer. Contract: [`capabilities.md`](capabilities.md#input-tables).
+
+M3 asked for "no all-zero rows/columns"; the strictly positive contract implies it. A
+non-negative variant waits for its first consumer, `dirmult_ttest` (M6).
 
 ---
 
@@ -305,10 +345,10 @@ the host.
 `ancom`, `dirmult_ttest`, `ilr`/`ilr_inv`, `permdisp`, then `ancombc2` against a pinned
 scikit-bio. Each follows the M3 template.
 
-Note on `ancombc2`: it is not in released scikit-bio. It lives on the unmerged `ancombc2_dev`
-branch and has known defects (`sensitivity_analysis()` raises `TypeError`;
-`_mdfdr_pairwise`/`_mdfdr_dunnett` compute `R` but never apply the mdFDR level adjustment their
-docstrings describe). Independent skbio pinning is exactly why this repo is separate.
+Note on `ancombc2`: scikit-bio 0.7.4 released it (**revised in M3**; it was on an unmerged
+branch with defects when this plan was written). Its post-hoc tests apply the mdFDR adjustment
+(verified). `trend` arrives with it: its contrast matrices need structured params. Independent
+skbio pinning is exactly why this repo is separate.
 
 ---
 

@@ -70,7 +70,7 @@ def test_init_replies_ready(tmp_path: Path) -> None:
         "type": "ready",
         "protocol_version": 1,
         "host_version": version("skb-arrow"),
-        "capabilities": {"echo": 1},
+        "capabilities": registry.schema_versions(),
         "id": None,
         "warnings": [],
     }
