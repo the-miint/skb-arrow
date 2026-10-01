@@ -35,8 +35,9 @@ Exceptions escaping a capability's `run`:
 
 Resource exhaustion is `MemoryError`, or `OSError` with errno `ENOSPC`, `EDQUOT`, or `ENOMEM`.
 `numpy.linalg.LinAlgError` and pyarrow's `ArrowInvalid` are `ValueError`s. `PatsyError` is
-matched by qualified name, so the host never imports patsy. `TypeError` is `internal`: it
-signals a programming error, and signature drift raises it inside library wrapper frames.
+matched by qualified name, so the classifier imports no capability library. `TypeError` is
+`internal`: it signals a programming error, and signature drift raises it inside library
+wrapper frames.
 
 A bad method or out-of-range value is `invalid_param` only when registry param validation
 catches it. Caught inside scikit-bio instead, it arrives as `ValueError` → `invalid_input`.

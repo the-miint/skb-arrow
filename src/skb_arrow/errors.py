@@ -34,7 +34,7 @@ class WarningEntry(TypedDict):
 
 
 _RESOURCE_ERRNOS = {errno.ENOSPC, errno.EDQUOT, errno.ENOMEM}
-# Qualified names, so optional libraries (patsy) are never imported.
+# Qualified names, so the classifier imports no capability library.
 _BY_TYPE = {
     "builtins.ValueError": "invalid_input",
     "builtins.KeyError": "invalid_param",
