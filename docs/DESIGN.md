@@ -214,9 +214,11 @@ changes no architecture.
 **Revised in M3** (measured with scikit-bio 0.7.4, Linux x86_64): something does build from
 source. biom-format, a hard scikit-bio dependency, has no cp314 wheels (2.1.17, the latest),
 so every install compiles it and needs a C compiler; CI has one. Wheels upstream or a compiler
-policy is due before M5. The runtime install is 522 MB, not ~124 MB. Importing
-`skbio.stats.composition` takes 0.37 s warm and 1.1 s cold, paid by every host start and
-`--version`. The libraries that compute answers are pinned exactly
+policy is due before M5. The runtime install is 710 MB, not ~124 + 64 MB: numba is 189 MB of
+it, llvmlite alone 172 MB. numba is installed and pinned now, though no capability uses it
+before M4; scikit-bio imports it when present. Importing the registry takes 0.45 s warm,
+numba's 0.08 s included, and over a second cold, paid by every host start and `--version`.
+The libraries that compute answers are pinned exactly
 ([`capabilities.md`](capabilities.md#versioning)).
 
 ### 3.10 Result shapes: unify a family into one long table

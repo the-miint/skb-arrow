@@ -165,11 +165,6 @@ def test_each_param_reaches_scikit_bio(param: str, value: Any) -> None:
     assert not reference.equals(expected())  # on this data, alone, it matters
 
 
-def test_the_schema_version_is_pinned() -> None:
-    # Bumping it must be a deliberate test edit (docs/capabilities.md#versioning).
-    assert registry.schema_versions()["ancombc"] == 1
-
-
 def test_by_default_only_the_main_test_runs() -> None:
     assert ancombc(pseudocount=1).equals(expected(posthoc=[], grouping=None))
 
@@ -256,7 +251,14 @@ def test_the_seed_changes_only_the_dunnett_rows() -> None:
     ("formula", "message"),
     [
         ("age +", "does not parse: "),
-        ("0", "has no terms"),
+        # patsy's tokenizer asserts, and its parser recurses per term.
+        pytest.param("age\0", "does not parse", id="NUL"),
+        pytest.param("(" * 250 + "age" + ")" * 250, "does not parse", id="nested"),
+        pytest.param(" + ".join(["age"] * 2000), "does not parse", id="2000 terms"),
+        ("", "names no metadata column"),
+        ("   ", "names no metadata column"),
+        ("0", "names no metadata column"),
+        ("1", "names no metadata column"),
         ("bmi ~ age", "must have no left-hand side"),
         ("age + log(age)", "names 'log(age)', not a bare column name"),
         ("age + table", "names 'table', not a metadata column"),
@@ -282,6 +284,18 @@ def test_a_column_python_cannot_name_barely_is_not_a_factor(
     assert PWNED not in os.environ
 
 
+@pytest.mark.parametrize(
+    "params",
+    [{"formula": "age +"}, {"posthoc": ["global"]}],
+    ids=["formula", "posthoc"],
+)
+def test_what_needs_no_data_is_checked_before_the_tables(
+    params: dict[str, Any],
+) -> None:
+    # Without a pseudocount the table is invalid too.
+    assert error(**params)[0] == "invalid_param"
+
+
 def test_a_left_hand_side_is_never_evaluated(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(PWNED, raising=False)
     assert error(pseudocount=1, formula=f"{PAYLOAD} ~ age") == (
@@ -298,7 +312,10 @@ def test_a_left_hand_side_is_never_evaluated(monkeypatch: pytest.MonkeyPatch) ->
             {"grouping": "nope"},
             "ancombc param 'grouping' names 'nope', not a metadata column",
         ),
-        ({"grouping": "age"}, "ancombc param 'grouping' must be categorical"),
+        (
+            {"grouping": "age"},
+            "ancombc param 'grouping' must be strings or a dictionary",
+        ),
         (
             {"grouping": "bmi", "formula": "age + region + bmi:region"},
             "ancombc param 'grouping' must be a term of its own in 'formula'",
@@ -355,21 +372,19 @@ def test_each_rules_bound_is_accepted() -> None:
         registry.validate("ancombc", INPUTS, {"formula": "a", "alpha": alpha, **params})
 
 
-@pytest.mark.parametrize(
-    ("column", "values"),
-    [
-        ("bmi", META["bmi"].replace("obese", "overweight")),
-        ("old", META["age"] > 40),  # booleans are categorical, of two groups
-    ],
-    ids=["two levels", "boolean"],
-)
-def test_fewer_than_three_groups_is_scikit_bios_invalid_input(
-    column: str, values: pd.Series
-) -> None:
-    tables = {"table": long(), "metadata": metadata(META.assign(**{column: values}))}
-    assert error(
-        tables, pseudocount=1, formula=f"{FORMULA} + {column}", grouping=column
-    ) == (
+def test_a_boolean_grouping_is_invalid_param() -> None:
+    # It has two groups at most; scikit-bio needs three.
+    tables = {"table": long(), "metadata": metadata(META.assign(old=META["age"] > 40))}
+    assert error(tables, pseudocount=1, formula="age + old", grouping="old") == (
+        "invalid_param",
+        "ancombc param 'grouping' must be strings or a dictionary",
+    )
+
+
+def test_fewer_than_three_groups_is_scikit_bios_invalid_input() -> None:
+    meta = META.assign(bmi=META["bmi"].replace("obese", "overweight"))
+    tables = {"table": long(), "metadata": metadata(meta)}
+    assert error(tables, pseudocount=1, grouping="bmi") == (
         "invalid_input",
         "ValueError: `grouping` must contain at least three observed groups.",
     )
@@ -401,14 +416,12 @@ def test_end_to_end_across_segments(tmp_path: Path) -> None:
     client = Client(SKB_ARROW, directory)
     try:
         assert client.send(INIT | {"segment_bytes": 1024})["type"] == "ready"
-        inputs = {
-            name: [
-                client.put(f"{name}-{i}", table.slice(i * 2000, 2000))
-                for i in range(-(-table.num_rows // 2000))
+        inputs = {}
+        for name, table in INPUTS.items():
+            rows = -(-table.num_rows // 3)
+            inputs[name] = [
+                client.put(f"{name}-{i}", table.slice(i * rows, rows)) for i in range(3)
             ]
-            for name, table in INPUTS.items()
-        }
-        assert len(inputs["table"]) > 1
         response = client.send(
             {
                 "type": "call",

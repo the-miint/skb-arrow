@@ -12,9 +12,8 @@ from skb_arrow.capabilities import echo
 PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 with PYPROJECT.open("rb") as f:
     VERSION = tomllib.load(f)["project"]["version"]
-# Protocol is pinned literally: bumping it must be a deliberate test edit.
-CAPABILITIES = ", ".join(f"{n}/{v}" for n, v in registry.schema_versions().items())
-EXPECTED = f"skb-arrow {VERSION}\nprotocol 1\ncapabilities: {CAPABILITIES}\n"
+# Versions are pinned literally: bumping one must be a deliberate test edit.
+EXPECTED = f"skb-arrow {VERSION}\nprotocol 1\ncapabilities: ancombc/1, echo/1\n"
 
 
 def test_version_reports_package_protocol_and_capabilities(

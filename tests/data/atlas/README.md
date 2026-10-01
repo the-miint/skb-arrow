@@ -2,7 +2,8 @@
 
 Verbatim from scikit-bio 0.7.4, `skbio/stats/composition/tests/data/`
 (<https://github.com/scikit-bio/scikit-bio/tree/0.7.4/skbio/stats/composition/tests/data>),
-BSD-3-Clause, copyright the scikit-bio development team.
+BSD-3-Clause, copyright the scikit-bio development team: its license is
+[`LICENSE.txt`](LICENSE.txt), verbatim from the same tag.
 
 | File | Holds |
 |---|---|

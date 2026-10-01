@@ -48,13 +48,15 @@ most once, and covariate columns.
 Why: DESIGN §3.11.
 
 patsy runs a formula's terms as Python, so a formula is checked before patsy evaluates it:
-- It parses, has no left-hand side (`y ~ a`), and has at least one term (`0` alone has none).
+- It parses, has no left-hand side (`y ~ a`), and names at least one column (an empty
+  formula, `0`, and `1` name none).
 - Every factor is a metadata column's bare name: a Python identifier, not a keyword or
   `__debug__`, that NFKC normalization leaves unchanged (Python reads `ｔａｂｌｅ` as `table`).
 - Operators `+ - * : / **` and `0`/`1` are allowed; calls are not (`log(age)`, `C(bmi)`,
   `Q('a b')`). Transform and rename in the caller; set a reference level by dictionary order.
 
-A failure is `invalid_param`.
+A failure is `invalid_param`. A column named `Intercept` collides with the one patsy adds and
+fails in scikit-bio, as `invalid_input`: rename it.
 
 ## ancombc
 scikit-bio 0.7.4's `ancombc`, with its post-hoc tests. `schema_version` 1.
@@ -75,9 +77,13 @@ Inputs: `table`, a feature table; `metadata`, its sample metadata ([input tables
 | `seed` | integer | 0 | ≥ 0; `dunnett` only |
 
 - `grouping` is the covariate that post-hoc tests compare, and `posthoc` needs it. It must be a
-  metadata column that is categorical (strings, a dictionary, or booleans), a term of its own
-  in `formula`, which has an intercept; each is `invalid_param`. It must have at least three
-  groups among the table's samples, or scikit-bio raises `invalid_input`.
+  metadata column of strings or a dictionary (booleans have two groups at most), a term of its
+  own in `formula`, and `formula` must have an intercept; each is `invalid_param`. The intercept
+  rule is conservative: `0 + region + bmi` still codes `bmi` against a reference, but is
+  rejected; `region + bmi` is the same model. `grouping` must have at least three groups among
+  the table's samples, or scikit-bio raises `invalid_input`.
+- Checked in this order: the formula's shape, and that `posthoc` has a `grouping`; the tables;
+  the formula's columns, and `grouping`.
 - `p_adjust` offers scikit-bio's own methods only: the statsmodels ones fail on the fractional
   family sizes of the post-hoc tests' correction.
 - The table contract admits no zero cell, so a table with zeros needs a `pseudocount`
@@ -103,8 +109,10 @@ Output, ordered by `test` (`main`, then `posthoc`'s in the order `global`, `pair
 - NULL means not applicable. NaN and ±inf are scikit-bio's, passed through as IEEE values.
   Nothing flags a coefficient the data can't estimate: a collinear design yields finite
   pseudo-inverse numbers.
-- `pairwise` and `dunnett` correct across features screened by a global test first: a feature
-  it drops has `pvalue` 1.
+- `pairwise` and `dunnett` correct only across the features a screen keeps; a feature it drops
+  has `pvalue` 1. Each has its own screen, not the `global` rows: `pairwise` a global test
+  adjusted by `bh` whatever `p_adjust` is, `dunnett` a bootstrap test of each feature's largest
+  |`w`|.
 - `dunnett` is the only stochastic test.
 
 ## Seeds
@@ -121,9 +129,10 @@ column. Differential abundance:
 
 `feature_id, test, term, lfc, se, w, pvalue, qvalue, signif`
 
-- `test` ∈ {`main`, `global`, `dunnett`, `pairwise`, `trend`}
+- `test` ∈ {`main`, `global`, `pairwise`, `dunnett`}, in that order; `trend` arrives with
+  `ancombc2` (M6)
 - `term`: covariate or comparison; NULL where not applicable
-- `lfc`, `se`: NULL for `global` and `trend`
+- `lfc`, `se`: NULL for `global` (and `trend`)
 - `w` is a z-statistic under `main`, chi-square/F under `global`; filter by `test`
 
 A per-family rule, not a global one: other capabilities may return a single narrow table.
@@ -162,7 +171,7 @@ params' names, types, defaults, and accepted values; its output schema. Every ch
 bumps the version, additions included, so a caller can require what it uses.
 
 `host_version` covers the implementation. The libraries that compute answers (scikit-bio,
-numpy, scipy, pandas, patsy) are pinned exactly ([`pyproject.toml`](../pyproject.toml)), so an
+numpy, scipy, pandas, patsy, numba) are pinned exactly ([`pyproject.toml`](../pyproject.toml)), so an
 answer is reproducible per `host_version`: bit for bit on the same machine and BLAS thread
 count, to floating-point tolerance across them. Other dependencies resolve at install; whether
 releases pin them is M5's.
