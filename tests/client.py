@@ -34,11 +34,11 @@ class Client:
         if "process_group" not in popen:
             popen.setdefault("start_new_session", True)
         # DIR relative to the host's cwd, as a caller may pass it.
+        popen.setdefault("stdout", subprocess.PIPE)
         self.process = subprocess.Popen(
             [*command, "--segment-dir", directory.name],
             cwd=directory.parent,
             stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
             **popen,
         )
         self.errors = bytearray()

@@ -36,6 +36,9 @@ def reserve() -> tuple[BinaryIO, int]:
     relay = os.open(os.devnull, os.O_WRONLY) if _same_pipe(1, 2) else _start_drainer()
     requests = os.fdopen(os.dup(0), "rb")
     responses = os.dup(1)
+    # A fork child finds /dev/null in their place, so it can't hold the caller's EOF.
+    channel = (requests.fileno(), responses)
+    os.register_at_fork(after_in_child=lambda: _blank(channel))
     null = os.open(os.devnull, os.O_RDONLY)
     os.dup2(null, 0)
     os.close(null)
@@ -75,6 +78,14 @@ def _start_drainer() -> int:
     os.waitpid(middle, 0)
     os.close(source)
     return relay
+
+
+def _blank(fds: tuple[int, ...]) -> None:
+    """Point `fds` at /dev/null."""
+    null = os.open(os.devnull, os.O_RDWR)
+    for fd in fds:
+        os.dup2(null, fd, inheritable=False)
+    os.close(null)
 
 
 def _same_pipe(a: int, b: int) -> bool:
@@ -158,6 +169,7 @@ def serve(directory: Path, requests: BinaryIO, responses: int) -> int:
         from skb_arrow import protocol  # loads pyarrow and every capability
 
         session = protocol.Session(directory)
+        _watch(responses, session.lock, directory)
         for line in requests:
             _send(responses, protocol.handle(session, line))
     except BrokenPipeError:
@@ -165,6 +177,40 @@ def serve(directory: Path, requests: BinaryIO, responses: int) -> int:
     finally:
         _clean(directory)
     return 0
+
+
+def _watch(responses: int, lock: threading.Lock, directory: Path) -> None:
+    """Once `responses` has no reader and `lock` is free: clean `directory`, exit 1.
+
+    The session holds `lock` except while a capability runs (DESIGN §3.14).
+    """
+    mode = os.fstat(responses).st_mode
+    if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)):
+        return  # a file has no reader to lose
+
+    def watch() -> None:
+        _await_no_reader(responses)
+        lock.acquire()  # never released: the session writes nothing more
+        try:
+            _clean(directory)
+        finally:
+            os._exit(1)
+
+    threading.Thread(target=watch, name="skb-arrow watch", daemon=True).start()
+
+
+def _await_no_reader(fd: int) -> None:
+    """Return once pipe or socket `fd` has no reader."""
+    if sys.platform == "darwin":  # its poll reports nothing unasked
+        queue = select.kqueue()
+        flags = select.KQ_EV_ADD | select.KQ_EV_CLEAR  # on a change, not while writable
+        queue.control([select.kevent(fd, select.KQ_FILTER_WRITE, flags)], 0)
+        while not any(e.flags & select.KQ_EV_EOF for e in queue.control(None, 1)):
+            pass
+    else:
+        watch = select.poll()
+        watch.register(fd, 0)  # POLLERR and POLLHUP come unasked
+        watch.poll()
 
 
 def _unusable(directory: Path) -> str | None:

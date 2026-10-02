@@ -258,6 +258,26 @@ def test_run_receives_every_param_resolved(
     assert seen == {"a": 0.5, "b": "x"}
 
 
+def test_a_new_session_holds_its_lock(tmp_path: Path) -> None:
+    assert protocol.Session(tmp_path).lock.locked()
+
+
+@pytest.mark.parametrize("run", [registry.CAPABILITIES["echo"].run, fail])
+def test_the_lock_is_free_only_while_a_capability_runs(
+    session: protocol.Session, monkeypatch: pytest.MonkeyPatch, run: Run
+) -> None:
+    held: list[bool] = []
+
+    def probe(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+        held.append(session.lock.locked())
+        return run(tables, params)
+
+    register(monkeypatch, "probe", probe, ("table",))
+    send(session, call({"table": [put(session.directory, "a")]}, "probe"))
+    assert held == [False]
+    assert session.lock.locked()  # again, whether `run` returned or raised
+
+
 def test_params_are_checked_before_any_segment_is_read(
     session: protocol.Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

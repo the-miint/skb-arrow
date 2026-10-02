@@ -10,6 +10,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -137,6 +138,72 @@ def test_a_caller_that_stops_reading_is_cleaned_up_after(
     assert client.process.wait(timeout=30) == 1
     assert not directory.exists()
     assert "Traceback" not in client.stderr()
+
+
+@pytest.mark.parametrize("channel", ["pipe", "socket"])
+def test_a_caller_that_stops_reading_mid_call_stops_the_host(
+    connect: Callable[..., Client], directory: Path, channel: str
+) -> None:
+    ours, theirs = socket.socketpair()
+    client = connect(
+        FIXTURE, stdout=theirs.fileno() if channel == "socket" else subprocess.PIPE
+    )
+    theirs.close()
+    responses = client.process.stdout or ours.makefile("rb")
+    client.write(INIT)
+    assert json.loads(responses.readline())["type"] == "ready"
+    client.write(call("stall", client.put("a", TABLE)))
+    client.put("b", TABLE)  # for a later call: DIR holds more than the call's own
+    responses.close()
+    ours.close()
+    with suppress(subprocess.TimeoutExpired):
+        client.process.wait(timeout=5)
+    assert client.process.returncode == 1  # within 5 s, not after the 60 s stall
+    assert not directory.exists()
+
+
+@pytest.mark.parametrize("first", ["stdin", "stdout"])
+def test_shutdown_exits_0_whichever_pipe_closes_first(
+    connect: Callable[..., Client], directory: Path, first: str
+) -> None:
+    client = connect(FIXTURE)
+    client.send(INIT)
+    assert client.send(call("echo", client.put("a", TABLE)))["type"] == "result"
+    assert client.process.stdin and client.process.stdout
+    pipes = [client.process.stdin, client.process.stdout]
+    for pipe in pipes if first == "stdin" else pipes[::-1]:
+        pipe.close()
+        time.sleep(0.2)  # for a watch that acts while idle to act
+    assert client.process.wait(timeout=10) == 0
+    assert not directory.exists()
+
+
+def test_responses_to_a_file_are_not_watched(tmp_path: Path, directory: Path) -> None:
+    requests = [INIT, {"type": "call", "capability": "threads", "input": {}}]
+    with open(tmp_path / "responses", "wb") as responses:
+        result = subprocess.run(
+            [*FIXTURE, "--segment-dir", str(directory)],
+            input=b"".join(json.dumps(r).encode() + b"\n" for r in requests),
+            stdout=responses,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    assert result.returncode == 0
+    assert b"threads: ['MainThread']" in result.stderr
+
+
+def test_an_idle_host_does_not_spin(connect: Callable[..., Client]) -> None:
+    client = connect(FIXTURE)
+    client.send(INIT)
+    names = iter(range(2))
+
+    def cpu() -> float:
+        result = client.send(call("cpu", client.put(f"c{next(names)}", TABLE)))
+        return float(client.fetch(result["output"])["seconds"][0].as_py())
+
+    before = cpu()
+    time.sleep(2)
+    assert cpu() - before < 0.5
 
 
 def test_cleanup_tries_every_entry_before_failing(
@@ -319,16 +386,18 @@ def test_a_stalled_stderr_cannot_keep_the_drainer_alive(
     os.close(unread)
 
 
-def test_the_drainer_never_holds_the_channel(connect: Callable[..., Client]) -> None:
+# `lingers` execs a child that keeps the drainer alive; `forks` forks one, bare.
+@pytest.mark.parametrize("child", ["lingers", "forks"])
+def test_no_child_holds_the_channel(connect: Callable[..., Client], child: str) -> None:
     client = connect(FIXTURE)
     client.send(INIT)
-    client.send(call("lingers", client.put("a", TABLE)))
+    client.send(call(child, client.put("a", TABLE)))
     client.process.kill()
     client.process.wait()
     assert client.process.stdout
     start = time.monotonic()
     assert client.process.stdout.read() == b""
-    assert time.monotonic() - start < 2  # not the 5 s the child lingers
+    assert time.monotonic() - start < 2  # not the 5 s the child lives
     assert client.process.stdin
     with pytest.raises(BrokenPipeError):  # unbuffered, so teardown has nothing to flush
         os.write(client.process.stdin.fileno(), b"\n")

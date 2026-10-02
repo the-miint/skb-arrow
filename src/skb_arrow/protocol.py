@@ -1,5 +1,6 @@
 import itertools
 import json
+import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from importlib.metadata import version
@@ -18,12 +19,20 @@ _ID_TYPES = (str, int)
 _REQUIRED = object()
 
 
+def _held() -> threading.Lock:
+    lock = threading.Lock()
+    lock.acquire()
+    return lock
+
+
 @dataclass
 class Session:
     directory: Path
     ready: bool = False  # an init succeeded
     segment_bytes: int = _DEFAULT_SEGMENT_BYTES
     outputs: Iterator[int] = field(default_factory=itertools.count)
+    # Held but while a capability runs: taking it then stops the session writing.
+    lock: threading.Lock = field(default_factory=_held)
 
 
 def handle(session: Session, line: bytes) -> bytes:
@@ -125,10 +134,13 @@ def _run(
     tables: dict[str, pa.Table],
     params: dict[str, Any],
 ) -> dict[str, Any]:
+    session.lock.release()  # the host may stop while it runs (DESIGN §3.14)
     try:
         output = capability.run(tables, params)
     except Exception as e:
         return {"type": "error", **classify(e, capability=True)}
+    finally:
+        session.lock.acquire()
     names = transport.write(
         session.directory, output, session.segment_bytes, session.outputs
     )

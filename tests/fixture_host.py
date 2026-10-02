@@ -1,6 +1,7 @@
 """A host with test capabilities: fixture_host.py --segment-dir DIR."""
 
 import os
+import resource
 import signal
 import subprocess
 import sys
@@ -80,6 +81,33 @@ def mutters(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.
     return tables["table"]
 
 
+def stall(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    time.sleep(60)  # releases the GIL, as a long scikit-bio call may
+    return tables["table"]
+
+
+def forks(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    if os.fork() == 0:  # bare: no exec, so it keeps what the host holds
+        time.sleep(5)
+        os._exit(0)
+    return tables["table"]
+
+
+def cpu(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    """The host's CPU time so far, in seconds, every thread's."""
+    import pyarrow as pa  # here: nothing heavy loads before host.reserve()
+
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return pa.table({"seconds": [usage.ru_utime + usage.ru_stime]})
+
+
+def threads(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    import pyarrow as pa  # here: nothing heavy loads before host.reserve()
+
+    print("threads:", sorted(t.name for t in threading.enumerate()))
+    return pa.table({})
+
+
 def childless(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
     """Fails if the host has a child, live or a zombie: code reaping all would wait."""
     try:
@@ -121,6 +149,10 @@ def main() -> int:
         ),
         "lingers": registry.Capability(1, table, {}, lingers),
         "childless": registry.Capability(1, table, {}, childless),
+        "stall": registry.Capability(1, table, {}, stall),
+        "forks": registry.Capability(1, table, {}, forks),
+        "cpu": registry.Capability(1, table, {}, cpu),
+        "threads": registry.Capability(1, frozenset(), {}, threads),
         "mutters": registry.Capability(
             1, table, {"dies": registry.Param(bool)}, mutters
         ),

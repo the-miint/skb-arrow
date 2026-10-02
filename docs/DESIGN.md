@@ -289,6 +289,30 @@ no note; the drainer now gives up only after 1 s without a write. It is forked t
 code reaping every child never waits on it, and closes every fd it inherits but its own, so a
 channel copy leaked to the host can't hold the caller's EOF.
 
+### 3.14 Lifecycle: the response pipe is watched, fork children are cut off
+
+A caller killed mid-call left the host computing until the call ended, only then to fail
+writing its answer. The host learns of it from its response pipe, not from its parent's
+death: the caller need not be the parent, and a caller that stops reading but lives counts
+too. Measured in the M4 design review (Linux, Python 3.14):
+- `poll` with no events asked reports `POLLERR` on a pipe whose reader closed and `POLLHUP` on
+  a socketpair whose peer closed; a full pipe with a live reader reports nothing, so an idle
+  watch costs nothing. XNU's source suggests macOS `poll` reports neither without asked-for
+  events (unmeasured), so there the host uses kqueue `EVFILT_WRITE` with `EV_CLEAR`, waking on
+  `EV_EOF`.
+- Acting on it at any time made every normal shutdown exit 1 (30 of 30 runs: the caller
+  closes stdout while the host is still reading stdin's EOF). So the watch acts only while a
+  capability runs: the request loop holds `Session.lock` except around `run`, and the watcher
+  takes it and never gives it back (0 of 30). It also can't clean DIR mid-write.
+- A capability blocked in one GIL-holding frame is abandoned only when the frame returns;
+  scikit-bio's `mantel` kernels let the watch run.
+
+A bare `fork()` child of a capability held the caller's EOF until it exited (3 s in the
+review's probe). An at-fork hook now points the child's channel fds at `/dev/null` (0 s);
+closing them instead would leave the Python objects owning numbers the child may reuse.
+`multiprocessing` execs its children on Linux 3.14 (forkserver) and macOS (spawn) anyway.
+Rules: [`protocol.md`](protocol.md#channel).
+
 ---
 
 ## 4. Versioning and compatibility

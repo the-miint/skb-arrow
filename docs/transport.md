@@ -9,8 +9,9 @@ Why memory-mapped files, not POSIX shm: DESIGN §3.2. Why chunked: §3.4. Implem
 - The host exits 2 unless DIR exists, is a directory, is readable and writable, and is empty,
   so it never cleans a directory holding anything else. It resolves DIR at start, so a later
   `chdir` or a symlink can't redirect cleanup. The caller writes no segment before `ready`.
-- Whoever outlives the other cleans DIR: the host on stdin EOF or a broken pipe, the caller
-  after the host exits (`ENOENT` counts as done). So the caller opens every output it needs
+- Whoever outlives the other cleans DIR: the host on stdin EOF, a broken pipe, or its
+  responses going unread mid-call ([`protocol.md`](protocol.md#channel)), the caller after
+  the host exits (`ENOENT` counts as done). So the caller opens every output it needs
   before closing stdin. Cleanup unlinks DIR's entries, then `rmdir`s it, before any diagnostic
   write (stderr may be a dead pipe).
 
@@ -47,8 +48,8 @@ framing excluded. A target, not a bound:
 
 ## Residuals
 - Both processes killed at once leave DIR behind.
-- A caller killed mid-call leaves the host running until the call ends (parent-death watchdog:
-  M4).
+- A caller killed mid-call leaves the host running until the call leaves any frame that holds
+  the GIL, or, with responses to a file, until the call ends.
 - The caller is trusted to write valid Arrow: only the structural check runs. A corrupt
   offset or dictionary index that passes it can crash the host. Full validation costs a pass
   over the data (~90 ms/GiB).
