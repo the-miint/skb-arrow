@@ -2,6 +2,7 @@
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -20,12 +21,18 @@ INIT = {"type": "init", "protocol_version": 1}
 
 
 class Client:
+    """A host leading its own process group: pgid == pid."""
+
     def __init__(
         self, command: list[str], directory: Path, timeout: float = 30, **popen: Any
     ) -> None:
         self.directory = directory
         # Read to EOF, as a caller should; a test passing `stderr` leaves it unread.
         popen.setdefault("stderr", subprocess.PIPE)
+        # So stopping it stops all it started: one that outlives it holding the channel
+        # would hang the test. (setsid, then setpgid, fails.)
+        if "process_group" not in popen:
+            popen.setdefault("start_new_session", True)
         # DIR relative to the host's cwd, as a caller may pass it.
         self.process = subprocess.Popen(
             [*command, "--segment-dir", directory.name],
@@ -39,9 +46,13 @@ class Client:
         if self.process.stderr:
             self.drain.start()
         # A wedged host fails its test instead of hanging it.
-        self.watchdog = threading.Timer(timeout, self.process.kill)
+        self.watchdog = threading.Timer(timeout, self._stop)
         self.watchdog.daemon = True
         self.watchdog.start()
+
+    def _stop(self) -> None:
+        with suppress(ProcessLookupError):  # the group is gone
+            os.killpg(self.process.pid, signal.SIGKILL)
 
     def _drain(self) -> None:
         assert self.process.stderr
@@ -92,9 +103,9 @@ class Client:
         return status
 
     def kill(self) -> None:
-        """Stop the host if it still runs: test teardown."""
+        """Stop the host and all it started, if they still run: test teardown."""
         self.watchdog.cancel()
-        self.process.kill()
+        self._stop()
         self.process.wait()
         for pipe in (self.process.stdin, self.process.stdout):
             if pipe:

@@ -10,7 +10,6 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -311,7 +310,7 @@ def test_a_stalled_stderr_cannot_keep_the_drainer_alive(
     connect: Callable[..., Client],
 ) -> None:
     unread, stderr = os.pipe()
-    client = connect(FIXTURE, timeout=10, stderr=stderr, start_new_session=True)
+    client = connect(FIXTURE, timeout=10, stderr=stderr)
     os.close(stderr)
     client.send(INIT)
     client.send(call("flood", client.put("a", TABLE), how="fd2", bytes=FLOOD))
@@ -321,22 +320,18 @@ def test_a_stalled_stderr_cannot_keep_the_drainer_alive(
 
 
 def test_the_drainer_never_holds_the_channel(connect: Callable[..., Client]) -> None:
-    client = connect(FIXTURE, start_new_session=True)
-    try:
-        client.send(INIT)
-        client.send(call("lingers", client.put("a", TABLE)))
-        client.process.kill()
-        client.process.wait()
-        assert client.process.stdout
-        start = time.monotonic()
-        assert client.process.stdout.read() == b""
-        assert time.monotonic() - start < 2  # not the 5 s the child lingers
-        assert client.process.stdin
-        with pytest.raises(BrokenPipeError):  # unbuffered: nothing left to flush
-            os.write(client.process.stdin.fileno(), b"\n")
-    finally:
-        with suppress(ProcessLookupError):  # the child, and the drainer it keeps
-            os.killpg(client.process.pid, signal.SIGKILL)
+    client = connect(FIXTURE)
+    client.send(INIT)
+    client.send(call("lingers", client.put("a", TABLE)))
+    client.process.kill()
+    client.process.wait()
+    assert client.process.stdout
+    start = time.monotonic()
+    assert client.process.stdout.read() == b""
+    assert time.monotonic() - start < 2  # not the 5 s the child lingers
+    assert client.process.stdin
+    with pytest.raises(BrokenPipeError):  # unbuffered, so teardown has nothing to flush
+        os.write(client.process.stdin.fileno(), b"\n")
 
 
 def test_the_drainer_holds_no_fd_leaked_into_the_host(
@@ -344,18 +339,14 @@ def test_the_drainer_holds_no_fd_leaked_into_the_host(
 ) -> None:
     # As a caller leaking its end of the channel would, or any pipe it awaits EOF on.
     awaited, leaked = os.pipe()
-    client = connect(FIXTURE, start_new_session=True, pass_fds=[leaked])
+    client = connect(FIXTURE, pass_fds=[leaked])
     os.close(leaked)
-    try:
-        client.send(INIT)
-        client.send(call("lingers", client.put("a", TABLE)))
-        client.process.kill()
-        client.process.wait()
-        assert read_to_eof(awaited, within=2) == b""  # not the 5 s the child lingers
-    finally:
-        os.close(awaited)
-        with suppress(ProcessLookupError):
-            os.killpg(client.process.pid, signal.SIGKILL)
+    client.send(INIT)
+    client.send(call("lingers", client.put("a", TABLE)))
+    client.process.kill()
+    client.process.wait()
+    assert read_to_eof(awaited, within=2) == b""  # not the 5 s the child lingers
+    os.close(awaited)
 
 
 def test_the_host_never_parents_the_drainer(connect: Callable[..., Client]) -> None:
