@@ -435,7 +435,9 @@ def test_stderr_goes_out_in_whole_lines_within_pipe_buf(
 
     reader = threading.Thread(target=receive)
     reader.start()
-    client = connect(FIXTURE, stderr=theirs.fileno())
+    # Held 1 s, not 50 ms: a CI runner can stall longer than the 10 ms between halves.
+    env = os.environ | {"FIXTURE_PARTIAL": "1"} if how == "halves" else None
+    client = connect(FIXTURE, stderr=theirs.fileno(), env=env)
     theirs.close()
     client.send(INIT)
     client.send(call("flood", client.put("a", TABLE), how=how, bytes=size))

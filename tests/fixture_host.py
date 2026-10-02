@@ -102,6 +102,8 @@ def broken(source: int) -> None:
 def main() -> int:
     if "FIXTURE_BREAK_DRAINER" in os.environ:
         host._drain = broken
+    if "FIXTURE_PARTIAL" in os.environ:  # how long a partial line is held, in seconds
+        host._PARTIAL = float(os.environ["FIXTURE_PARTIAL"])
     channel = host.reserve()
     # As a capability's library might, on import.
     print("import-time print")
