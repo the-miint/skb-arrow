@@ -16,6 +16,19 @@ from skb_arrow import registry
 
 _SAMPLES = [f"s{i}" for i in range(12)]
 _COUNTS = np.random.default_rng(0).integers(1, 50, size=(12, 5))
+_PAIRS = [(a, b) for a in range(5) for b in range(a + 1, 5)]
+
+
+def _distances(seed: int) -> pa.Table:
+    values = np.random.default_rng(seed).random(len(_PAIRS))
+    return pa.table(
+        {
+            "id_a": [a for a, _ in _PAIRS],
+            "id_b": [b for _, b in _PAIRS],
+            "distance": values,
+        }
+    )
+
 
 # One call per capability, through its stochastic paths where it has them.
 EXAMPLES: dict[str, tuple[dict[str, pa.Table], dict[str, Any]]] = {
@@ -38,6 +51,7 @@ EXAMPLES: dict[str, tuple[dict[str, pa.Table], dict[str, Any]]] = {
             "bootstraps": 10,
         },
     ),
+    "mantel": ({"x": _distances(1), "y": _distances(2)}, {"permutations": 9}),
 }
 
 

@@ -1,9 +1,11 @@
 """Input-table contracts shared by capabilities (docs/capabilities.md#input-tables)."""
 
+import bisect
 import itertools
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -14,6 +16,7 @@ import pyarrow.compute as pc
 from skb_arrow.errors import InvalidInput
 
 _COLUMNS = ["sample_id", "feature_id", "value"]
+_DISTANCE_COLUMNS = ["id_a", "id_b", "distance"]
 _SHOWN = 5
 
 
@@ -81,6 +84,100 @@ def feature_table(name: str, table: pa.Table, *, pseudocount: float) -> FeatureT
             pairs(_true_cells(bad)),
         )
     return FeatureTable(matrix, samples, features)
+
+
+@dataclass(frozen=True, eq=False)
+class DistanceTable:
+    condensed: npt.NDArray[np.float64]  # scipy's order: (0, 1), (0, 2), …, (1, 2), …
+    ids: pa.Array  # sorted, normalized
+
+
+def distance_matrix(name: str, table: pa.Table) -> DistanceTable:
+    """Input `name` as a condensed distance matrix, once it keeps the contract."""
+    if sorted(table.column_names) != sorted(_DISTANCE_COLUMNS):
+        raise InvalidInput(
+            f"{name}: columns must be {', '.join(_DISTANCE_COLUMNS)}; "
+            f"got {_names(table.column_names)}"
+        )
+    a, b = (_ids(name, table, column) for column in _DISTANCE_COLUMNS[:2])
+    if a.type != b.type:
+        raise InvalidInput(
+            f"{name}: id_a and id_b must be the same kind; got {a.type} and {b.type}"
+        )
+    distance = table["distance"]
+    if not (pa.types.is_integer(distance.type) or pa.types.is_floating(distance.type)):
+        raise InvalidInput(
+            f"{name}: distance must be integers or floating point, not {distance.type}"
+        )
+    rows = table.num_rows
+    if rows == 0:
+        raise InvalidInput(f"{name}: no rows")
+    ids = _sorted_unique(pa.chunked_array([*a.chunks, *b.chunks], a.type))
+    i, j = (
+        pc.index_in(column, value_set=ids).to_numpy().astype(np.int64)
+        for column in (a, b)
+    )
+    if (selves := np.flatnonzero(i == j)).size:
+        raise _offence(
+            name,
+            f"{selves.size} of {rows} rows pair an ID with itself",
+            (ids[k].as_py() for k in np.unique(i[selves])),
+        )
+    n = len(ids)
+    low, high = np.minimum(i, j), np.maximum(i, j)
+    codes = _start(n, low) + high - low - 1  # the pair's place in the condensed form
+
+    def pairs(codes: Iterable[int]) -> Iterator[tuple[object, object]]:
+        for code in codes:
+            r = bisect.bisect_right(range(n), code, key=lambda r: _start(n, r)) - 1
+            yield ids[r].as_py(), ids[int(code) - _start(n, r) + r + 1].as_py()
+
+    if nulls := distance.null_count:
+        where = np.sort(codes[distance.is_null().to_numpy(zero_copy_only=False)])
+        raise _offence(
+            name, f"distance is null in {nulls} of {rows} rows", pairs(where)
+        )
+    present, counts = np.unique(codes, return_counts=True)
+    if (repeats := present[counts > 1]).size:
+        raise _offence(
+            name, f"{repeats.size} of {present.size} pairs repeat", pairs(repeats)
+        )
+    total = n * (n - 1) // 2
+    if missing := total - present.size:
+        raise _offence(
+            name,
+            f"{missing} of {total} pairs are missing",
+            pairs(_gaps(present, total)),
+        )
+    values = distance.to_numpy()
+    bad = ~(np.isfinite(values) & (values >= 0))
+    if count := int(bad.sum()):
+        raise _offence(
+            name,
+            f"{count} of {rows} distances are negative or not finite",
+            pairs(np.sort(codes[bad])),
+        )
+    condensed = np.empty(total)
+    condensed[codes] = values
+    return DistanceTable(condensed, ids)
+
+
+def same_ids(name: str, ids: pa.Array, other: str, expected: pa.Array) -> None:
+    """Input `name` holds exactly input `other`'s IDs, of their kind."""
+    if ids.type != expected.type:
+        raise InvalidInput(f"{name}: IDs are {ids.type}, {other}'s are {expected.type}")
+    if len(extra := ids.filter(pc.invert(pc.is_in(ids, value_set=expected)))):
+        raise _offence(
+            name,
+            f"{len(extra)} of {len(ids)} IDs are not in {other}",
+            extra.to_pylist(),
+        )
+    if len(missing := expected.filter(pc.invert(pc.is_in(expected, value_set=ids)))):
+        raise _offence(
+            name,
+            f"{len(missing)} of {len(expected)} {other} IDs are missing",
+            missing.to_pylist(),
+        )
 
 
 def sample_metadata(name: str, table: pa.Table, samples: pa.Array) -> pd.DataFrame:
@@ -202,6 +299,19 @@ def _check_defined(
             f"column {column!r} is {problem} for {count} of {len(samples)} samples",
             sorted(samples.filter(undefined).to_pylist()),
         )
+
+
+def _start(n: int, row: Any) -> Any:
+    """Where `row`'s pairs start in the condensed form of `n` IDs (works on arrays)."""
+    return row * (2 * n - row - 1) // 2
+
+
+def _gaps(present: npt.NDArray[np.int64], total: int) -> Iterator[int]:
+    """The codes below `total` that sorted, distinct `present` lacks, in order."""
+    before = np.concatenate(([-1], present))
+    for k in np.flatnonzero(np.diff(before) > 1):
+        yield from range(int(before[k]) + 1, int(before[k + 1]))
+    yield from range(int(before[-1]) + 1, total)
 
 
 def _true_cells(mask: npt.NDArray[np.bool_]) -> Iterator[int]:

@@ -6,7 +6,7 @@ from typing import Any
 
 import pyarrow as pa
 
-from skb_arrow.capabilities import ancombc, echo
+from skb_arrow.capabilities import ancombc, echo, mantel
 from skb_arrow.errors import HostIncompatible, InvalidParam
 
 # Every JSON type, as messages name it; `float` is a number.
@@ -152,4 +152,25 @@ CAPABILITIES = {
         ancombc.run,
     ),
     "echo": Capability(1, frozenset({"table"}), {}, echo.run),
+    "mantel": Capability(
+        1,
+        frozenset({"x", "y"}),
+        {
+            "method": Param(
+                str,
+                "pearson",
+                lambda v: v in mantel.METHODS,
+                f"one of {', '.join(mantel.METHODS)}",
+            ),
+            "permutations": Param(int, 999, lambda v: v >= 0, "at least 0"),
+            "alternative": Param(
+                str,
+                "two-sided",
+                lambda v: v in mantel.ALTERNATIVES,
+                f"one of {', '.join(mantel.ALTERNATIVES)}",
+            ),
+            "seed": Param(int, 0, lambda v: v >= 0, "at least 0"),
+        },
+        mantel.run,
+    ),
 }

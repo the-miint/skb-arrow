@@ -48,6 +48,21 @@ most once, and covariate columns.
   or nulls.
 - No covariate is null, NaN, or infinite for a sample in the table.
 
+**Distance table**, long: columns exactly `id_a`, `id_b`, `distance`, in any order.
+- `id_a` and `id_b` hold the same kind of ID.
+- `distance` is integers or floating point, never null, NaN, infinite, or negative. Values
+  become float64.
+- Each unordered pair of distinct IDs appears exactly once, in either orientation: no row pairs
+  an ID with itself, and none of the n(n−1)/2 pairs is missing or repeated (`(b, a)` repeats
+  `(a, b)`). At least one row.
+- Checked in this order: columns, IDs, their kinds, `distance`'s type, rows, self pairs, nulls,
+  repeats, missing pairs, values. Memory stays proportional to the rows until every check
+  passes.
+- IDs are sorted ascending and the matrix is condensed, so an answer never depends on row
+  order or orientation.
+
+**Distance tables** compared with each other hold the same IDs, of the same kind.
+
 ## Formulas
 Why: DESIGN §3.11.
 
@@ -118,6 +133,38 @@ Output, ordered by `test` (`main`, then `posthoc`'s in the order `global`, `pair
   adjusted by `bh` whatever `p_adjust` is, `dunnett` a bootstrap test of each feature's largest
   |`w`|.
 - `dunnett` is the only stochastic test.
+
+## mantel
+scikit-bio 0.7.4's `mantel`, on its numba kernels. `schema_version` 1.
+
+Inputs: `x`, `y`, distance tables over the same IDs ([input tables](#input-tables)).
+
+| Param | Type | Default | Accepts |
+|---|---|---|---|
+| `method` | string | `pearson` | `pearson`, `spearman`, `kendalltau` |
+| `permutations` | integer | 999 | ≥ 0 |
+| `alternative` | string | `two-sided` | `two-sided`, `greater`, `less` |
+| `seed` | integer | 0 | ≥ 0 |
+
+- `x` is permuted. `greater` tests for a positive correlation, `less` for a negative one.
+- Checked in this order: `x`, `y`, then that they hold the same IDs. Fewer than 3 IDs is
+  scikit-bio's `invalid_input`.
+- `kendalltau` permutes in Python, not numba: about 52 s at 1000 IDs and 999 permutations.
+- numba's threads come from the environment (`NUMBA_NUM_THREADS`, default every core); the
+  answer doesn't depend on their count. A host's first call compiles each kernel it uses,
+  about 0.3 s each (DESIGN §3.8).
+
+Output, one row:
+
+| Field | Type | Null |
+|---|---|---|
+| `statistic` | double | never |
+| `pvalue` | double | never |
+| `n` | int64 | never |
+
+- `n` is the number of IDs.
+- `pvalue` is NaN for `permutations: 0`. A constant input makes `statistic` and `pvalue` NaN,
+  with scipy's `ConstantInputWarning`.
 
 ## Seeds
 Why: DESIGN §3.7.

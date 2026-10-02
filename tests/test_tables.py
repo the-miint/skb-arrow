@@ -438,3 +438,201 @@ def test_covariates_reach_patsy_as_pandas_would_read_them() -> None:
     assert frame["f"].dtype == np.float64
     assert frame["s"].dtype == read["s"].dtype
     assert isinstance(frame["d"].dtype, pd.CategoricalDtype)
+
+
+# Upper triangle, row by row: (a, b), (a, c), (a, d), (b, c), (b, d), (c, d).
+SQUARE = [[0, 1, 2, 3], [1, 0, 4, 5], [2, 4, 0, 6], [3, 5, 6, 0]]
+PAIRS: Rows = [("d", "c", 6), ("a", "b", 1), ("c", "a", 2), ("b", "d", 5)]
+PAIRS += [("a", "d", 3), ("c", "b", 4)]
+NOT_DISTANCES = "distances are negative or not finite"
+
+
+def distances(
+    rows: Rows,
+    a: pa.DataType = STRING,
+    b: pa.DataType = STRING,
+    distance: pa.DataType = INT64,
+) -> pa.Table:
+    ids_a, ids_b, values = zip(*rows, strict=True) if rows else ((), (), ())
+    return pa.table(
+        {
+            "id_a": pa.array(ids_a, a),
+            "id_b": pa.array(ids_b, b),
+            "distance": pa.array(values, distance),
+        }
+    )
+
+
+def condense(table: pa.Table) -> _tables.DistanceTable:
+    return _tables.distance_matrix("x", table)
+
+
+def test_a_distance_table_becomes_its_condensed_matrix_with_ids_sorted() -> None:
+    loaded = condense(distances(PAIRS))
+    assert loaded.ids.equals(pa.array(["a", "b", "c", "d"]))
+    assert np.array_equal(loaded.condensed, np.asarray(SQUARE)[np.triu_indices(4, 1)])
+    assert loaded.condensed.dtype == np.float64
+
+
+def test_row_order_and_orientation_never_change_the_condensed_matrix() -> None:
+    flipped: Rows = [(b, a, d) for a, b, d in PAIRS[::-1]]
+    first, second = condense(distances(PAIRS)), condense(distances(flipped))
+    assert np.array_equal(first.condensed, second.condensed)
+    assert first.ids.equals(second.ids)
+
+
+def test_a_distance_table_in_chunks_loads_as_one() -> None:
+    table = distances(PAIRS)
+    chunked = pa.Table.from_batches(table.to_batches(max_chunksize=4))
+    assert chunked["id_a"].num_chunks > 1
+    assert np.array_equal(condense(chunked).condensed, condense(table).condensed)
+
+
+def test_distance_tables_compare_by_identity_not_by_their_arrays() -> None:
+    loaded = condense(distances(PAIRS))
+    assert loaded == loaded and loaded != condense(distances(PAIRS))
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [["id_a", "id_b"], ["id_a", "id_b", "distance", "x"], ["a", "b", "distance"]],
+)
+def test_the_distance_columns_are_exactly_the_three(columns: list[str]) -> None:
+    table = pa.table({c: pa.array([1]) for c in columns})
+    got = ", ".join(repr(c) for c in columns)
+    with rejects(f"x: columns must be id_a, id_b, distance; got {got}"):
+        condense(table)
+
+
+def test_the_distance_columns_may_come_in_any_order() -> None:
+    table = distances(PAIRS).select(["distance", "id_b", "id_a"])
+    assert np.array_equal(condense(table).condensed, [1, 2, 3, 4, 5, 6])
+
+
+def test_distance_ids_are_normalized() -> None:
+    rows: Rows = [(2, 1, 1.0), (3, 1, 2.0), (2, 3, 3.0)]
+    loaded = condense(distances(rows, pa.int32(), pa.uint8()))
+    assert loaded.ids.equals(pa.array([1, 2, 3], pa.int64()))
+    named: Rows = [(str(a), str(b), d) for a, b, d in rows]
+    loaded = condense(distances(named, pa.large_string(), pa.string_view()))
+    assert loaded.ids.equals(pa.array(["1", "2", "3"]))
+
+
+@pytest.mark.parametrize("column", ["id_a", "id_b"])
+def test_a_distance_id_is_never_null(column: str) -> None:
+    table = distances(PAIRS)
+    ids = table[column].to_pylist()
+    table = table.set_column(
+        table.column_names.index(column), column, pa.array([None, *ids[1:]])
+    )
+    with rejects(f"x: {column} is null in 1 of 6 rows"):
+        condense(table)
+
+
+def test_both_id_columns_hold_the_same_kind() -> None:
+    rows: Rows = [(1, "b", 1), (1, "c", 2), (2, "c", 3)]
+    with rejects("x: id_a and id_b must be the same kind; got int64 and string"):
+        condense(distances(rows, pa.int64()))
+
+
+@pytest.mark.parametrize(
+    "values",
+    [pa.array(["1"] * 6), pa.array([True] * 6), pa.array([Decimal(1)] * 6)],
+)
+def test_distances_are_integers_or_floating_point(values: pa.Array) -> None:
+    table = distances(PAIRS).set_column(2, "distance", values)
+    with rejects(f"x: distance must be integers or floating point, not {values.type}"):
+        condense(table)
+
+
+def test_a_distance_table_has_rows() -> None:
+    with rejects("x: no rows"):
+        condense(distances([]))
+
+
+def test_no_row_pairs_an_id_with_itself() -> None:
+    with rejects("x: 2 of 8 rows pair an ID with itself, e.g. 'b', 'c'"):
+        condense(distances([*PAIRS, ("c", "c", 0), ("b", "b", 0)]))
+
+
+def test_a_distance_is_never_null() -> None:
+    rows: Rows = [(a, b, None if (a, b) == ("c", "a") else d) for a, b, d in PAIRS]
+    with rejects("x: distance is null in 1 of 6 rows, e.g. ('a', 'c')"):
+        condense(distances(rows))
+
+
+def test_null_distances_are_shown_in_sorted_order() -> None:
+    rows: Rows = [(a, b, None if d in (6, 1) else d) for a, b, d in PAIRS]
+    with rejects("x: distance is null in 2 of 6 rows, e.g. ('a', 'b'), ('c', 'd')"):
+        condense(distances(rows))
+
+
+@pytest.mark.parametrize("repeat", [("a", "c", 2), ("c", "a", 2)])
+def test_a_pair_appears_once_in_either_orientation(
+    repeat: tuple[object, object, object],
+) -> None:
+    with rejects("x: 1 of 6 pairs repeat, e.g. ('a', 'c')"):
+        condense(distances([*PAIRS, repeat]))
+
+
+@pytest.mark.parametrize("pair", [("b", "d"), ("c", "d")])  # the last, too
+def test_every_pair_appears(pair: tuple[str, str]) -> None:
+    rows = [row for row in PAIRS if set(row[:2]) != set(pair)]
+    with rejects(f"x: 1 of 6 pairs are missing, e.g. {pair}"):
+        condense(distances(rows))
+
+
+def test_missing_pairs_are_shown_in_sorted_order() -> None:
+    rows: Rows = [("e", "d", 1), ("b", "a", 1), ("c", "a", 1)]
+    shown = "('a', 'd'), ('a', 'e'), ('b', 'c'), ('b', 'd'), ('b', 'e')"
+    with rejects(f"x: 7 of 10 pairs are missing, e.g. {shown}"):
+        condense(distances(rows))
+
+
+def test_missing_pairs_are_found_without_the_matrix() -> None:
+    # 200,000 IDs: their 20 billion pairs would take 160 GB as float64.
+    ids = pa.array(np.arange(200_000))
+    table = pa.table(
+        {"id_a": ids[::2], "id_b": ids[1::2], "distance": pa.array(np.ones(100_000))}
+    )
+    shown = "(0, 2), (0, 3), (0, 4), (0, 5), (0, 6)"
+    with rejects(f"x: 19999800000 of 19999900000 pairs are missing, e.g. {shown}"):
+        condense(table)
+
+
+@pytest.mark.parametrize("value", [-1.0, np.nan, np.inf])
+def test_a_distance_is_finite_and_never_negative(value: float) -> None:
+    rows: Rows = [(a, b, value if (a, b) == ("b", "d") else d) for a, b, d in PAIRS]
+    with rejects(f"x: 1 of 6 {NOT_DISTANCES}, e.g. ('b', 'd')"):
+        condense(distances(rows, distance=pa.float64()))
+
+
+def test_a_distance_may_be_zero() -> None:
+    rows: Rows = [(a, b, 0 if d == 1 else d) for a, b, d in PAIRS]
+    assert np.array_equal(condense(distances(rows)).condensed, [0, 2, 3, 4, 5, 6])
+
+
+def test_bad_distances_are_shown_in_sorted_order() -> None:
+    rows: Rows = [(a, b, -d) if d in (6, 2) else (a, b, d) for a, b, d in PAIRS]
+    with rejects(f"x: 2 of 6 {NOT_DISTANCES}, e.g. ('a', 'c'), ('c', 'd')"):
+        condense(distances(rows))
+
+
+def test_tables_with_the_same_ids_pass() -> None:
+    _tables.same_ids("y", pa.array(["a", "b"]), "x", pa.array(["a", "b"]))
+
+
+@pytest.mark.parametrize(
+    ("ids", "message"),
+    [
+        (pa.array([1, 2, 3]), "y: IDs are int64, x's are string"),
+        (
+            pa.array(["a", "b", "c", "e", "f"]),
+            "y: 2 of 5 IDs are not in x, e.g. 'e', 'f'",
+        ),
+        (pa.array(["a", "c"]), "y: 1 of 3 x IDs are missing, e.g. 'b'"),
+    ],
+)
+def test_tables_compared_hold_the_same_ids(ids: pa.Array, message: str) -> None:
+    with rejects(message):
+        _tables.same_ids("y", ids, "x", pa.array(["a", "b", "c"]))

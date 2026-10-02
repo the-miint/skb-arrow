@@ -194,6 +194,11 @@ check a flag, so cooperative cancellation would offer weak guarantees for real c
 Mitigation: a persistent `NUMBA_CACHE_DIR` means a kill costs imports (~0.8 s), not JIT
 recompilation.
 
+**Revised in M4** (M4 design review, scikit-bio 0.7.4): the mitigation never worked. No
+scikit-bio `@njit` sets `cache=True`, so `NUMBA_CACHE_DIR` stores nothing, and a restarted
+host compiles each kernel again on its first call, about 0.3 s each (0.26–0.5 s measured).
+Accepted: a kill costs imports plus that. `cache=True` upstream is the fix, outside this repo.
+
 ### 3.9 Python 3.14 only, uv-managed, PyPI-distributed
 
 `requires-python = ">=3.14"`. Verified that **every** dependency ships cp314 wheels for both
@@ -221,6 +226,11 @@ before M4; scikit-bio imports it when present. Importing the registry takes 0.45
 numba's 0.08 s included, and over a second cold, paid by every host start and `--version`.
 The libraries that compute answers are pinned exactly
 ([`capabilities.md`](capabilities.md#versioning)).
+
+**M4:** `mantel` is numba's consumer, fixed to `engine="numba"`: on arm64, clang fuses
+multiply-adds in the cython kernel, so the answer could depend on the engine. In the M4 design
+review, numba's results were identical across square and condensed layouts and 1 and 32
+threads (2000 IDs). CI runs it end to end on both platforms.
 
 ### 3.10 Result shapes: unify a family into one long table
 
@@ -430,7 +440,7 @@ documented; adding a capability requires touching only `capabilities/` and the r
 - Daemon lifecycle: init → many batches → shutdown; warm-process reuse
 - stderr discipline (an undrained stderr pipe deadlocked gpl-boundary; do not repeat it)
 - Chunk size policy, and large-payload tests sized against the §3.2 macOS cliff
-- `mantel` as the numba consumer, with a persistent `NUMBA_CACHE_DIR`
+- `mantel` as the numba consumer (no `NUMBA_CACHE_DIR`: §3.8)
 - Soak test: many batches, no leaked descriptors or files
 
 **Done when:** a soak run leaves no orphans; numba tier is exercised in CI; stderr cannot wedge

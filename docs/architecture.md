@@ -32,5 +32,6 @@ touches transport or JSON; it raises skb_arrow error classes for faults it antic
 | `capabilities/echo.py` | returns its input |
 | `capabilities/_tables.py` | input-table contracts shared by capabilities |
 | `capabilities/ancombc.py` | ANCOM-BC, its formula and grouping checks |
+| `capabilities/mantel.py` | the Mantel test between two distance tables |
 
 A module becomes a package when it outgrows one file; imports don't change.
