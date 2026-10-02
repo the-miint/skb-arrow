@@ -119,7 +119,8 @@ def test_a_killed_host_leaves_outputs_only_in_dir_for_the_caller_to_clean(
     client = connect(FIXTURE, env=os.environ | {"TMPDIR": str(private)})
     client.send(INIT)
     client.write(call("dies", client.put("a", TABLE)))
-    assert client.shut() == -signal.SIGKILL
+    # Pipes left open: closing stdout now would stop the host before it dies.
+    assert client.process.wait(timeout=30) == -signal.SIGKILL
     assert [p.name for p in directory.iterdir()] == ["skbout-0"]
     assert list(private.iterdir()) == []
     assert "about to die" in client.stderr()
@@ -391,7 +392,7 @@ def test_a_line_without_its_newline_outlives_the_host(
     client = connect(FIXTURE)
     client.send(INIT)
     client.write(call("mutters", client.put("a", TABLE), dies=True))
-    assert client.shut() == -signal.SIGKILL
+    assert client.process.wait(timeout=30) == -signal.SIGKILL
     assert client.stderr().endswith("no newline")
 
 
@@ -412,7 +413,7 @@ def test_dropped_stderr_is_counted_and_the_last_words_kept(
     client.send(call("flood", client.put("a", TABLE), how="fd2", bytes=FLOOD))
     time.sleep(stall)
     assert client.shut() == 0
-    log = read_to_eof(unread, within=10, size=4096, pause=pause)
+    log = read_to_eof(unread, within=30, size=4096, pause=pause)  # macOS sleeps long
     os.close(unread)
     dropped = sum(int(n) for n in DROPPED.findall(log))
     kept = DROPPED.sub(b"", log)
