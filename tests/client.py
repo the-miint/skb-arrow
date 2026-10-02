@@ -33,8 +33,8 @@ class Client:
         # would hang the test. (setsid, then setpgid, fails.)
         if "process_group" not in popen:
             popen.setdefault("start_new_session", True)
-        # DIR relative to the host's cwd, as a caller may pass it.
         popen.setdefault("stdout", subprocess.PIPE)
+        # DIR relative to the host's cwd, as a caller may pass it.
         self.process = subprocess.Popen(
             [*command, "--segment-dir", directory.name],
             cwd=directory.parent,

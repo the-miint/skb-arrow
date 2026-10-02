@@ -12,9 +12,9 @@ generic call path (DESIGN §1).
 - Imports its libraries at module level, so their warning filters persist across calls.
 - Declares a `schema_version` ([versioning](#versioning)).
 - Leaves process state as found, so an answer can't depend on the calls before it: it seeds
-  no global RNG and changes no scikit-bio config, working directory, environment variable,
-  or numpy error mode. The host enforces nothing; a test runs every registered capability and
-  checks.
+  no global RNG and changes no scikit-bio config, pandas option, working directory,
+  environment variable, or numpy error mode. The host enforces nothing; a test runs every
+  registered capability and checks.
 
 ## Input tables
 Contracts shared by capabilities (`src/skb_arrow/capabilities/_tables.py`), checked before any

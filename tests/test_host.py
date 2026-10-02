@@ -206,6 +206,55 @@ def test_an_idle_host_does_not_spin(connect: Callable[..., Client]) -> None:
     assert cpu() - before < 0.5
 
 
+def test_a_caller_gone_before_ready_is_cleaned_up_after(
+    connect: Callable[..., Client], directory: Path
+) -> None:
+    client = connect(FIXTURE)
+    assert client.process.stdout
+    client.process.stdout.close()  # before the host has started its watch, too
+    client.write(INIT)
+    assert client.process.wait(timeout=30) == 1
+    assert not directory.exists()
+    assert "Traceback" not in client.stderr()
+
+
+def test_a_cleanup_the_watch_fails_is_reported(
+    connect: Callable[..., Client], directory: Path
+) -> None:
+    client = connect(FIXTURE)
+    client.send(INIT)
+    client.write(call("stall", client.put("a", TABLE)))
+    (directory / "sub").mkdir()  # breaks the rules; unlink can't remove it
+    assert client.process.stdout
+    client.process.stdout.close()
+    with suppress(subprocess.TimeoutExpired):
+        client.process.wait(timeout=5)
+    assert client.process.returncode == 1
+    assert f"skb-arrow: cleaning {directory.resolve()}: " in client.stderr()
+
+
+def test_a_fork_child_unwinding_into_the_host_leaves_dir_alone(
+    connect: Callable[..., Client], directory: Path
+) -> None:
+    client = connect(FIXTURE)
+    client.send(INIT)
+    later = client.put("later", TABLE)
+    assert client.send(call("unwinds", client.put("a", TABLE)))["type"] == "result"
+    assert client.send(call("echo", later))["type"] == "result"
+    assert client.shut() == 0
+    assert not directory.exists()
+
+
+def test_only_the_hosts_own_fork_children_lose_the_channel(
+    connect: Callable[..., Client],
+) -> None:
+    client = connect(FIXTURE)
+    client.send(INIT)
+    response = client.send(call("forks_twice", client.put("a", TABLE)))
+    assert (response["type"], response.get("message")) == ("result", None)
+    assert client.shut() == 0
+
+
 def test_cleanup_tries_every_entry_before_failing(
     connect: Callable[..., Client], directory: Path
 ) -> None:

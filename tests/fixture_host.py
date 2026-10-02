@@ -9,7 +9,7 @@ import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 from skb_arrow import host
 
@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 
 DYING = threading.Event()
+CHANNEL: tuple[BinaryIO, int]  # (requests, response fd), once reserved
 
 
 def noisy(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
@@ -93,6 +94,39 @@ def forks(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Ta
     return tables["table"]
 
 
+def unwinds(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    """A fork child raising back into the host's code, as a buggy library's might."""
+    if (child := os.fork()) == 0:
+        raise RuntimeError("the child unwinds")
+    os.waitpid(child, 0)
+    return tables["table"]
+
+
+def forks_twice(
+    tables: Mapping[str, pa.Table], params: Mapping[str, object]
+) -> pa.Table:
+    """A fork child puts a pipe at the channel's fd number; its child must keep it."""
+    fd = CHANNEL[1]
+    report, reported = os.pipe()
+    if (child := os.fork()) == 0:
+        got, put = os.pipe()
+        os.dup2(put, fd)
+        os.close(put)
+        if os.fork() == 0:
+            os.write(fd, b"kept")
+            os._exit(0)
+        os.close(fd)
+        os.write(reported, os.read(got, 4) or b"lost")
+        os._exit(0)
+    os.close(reported)
+    answer = os.read(report, 4)
+    os.close(report)
+    os.waitpid(child, 0)
+    if answer != b"kept":
+        raise RuntimeError(f"the grandchild's pipe was {answer!r}")
+    return tables["table"]
+
+
 def cpu(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
     """The host's CPU time so far, in seconds, every thread's."""
     import pyarrow as pa  # here: nothing heavy loads before host.reserve()
@@ -132,7 +166,8 @@ def main() -> int:
         host._drain = broken
     if "FIXTURE_PARTIAL" in os.environ:  # how long a partial line is held, in seconds
         host._PARTIAL = float(os.environ["FIXTURE_PARTIAL"])
-    channel = host.reserve()
+    global CHANNEL
+    CHANNEL = channel = host.reserve()
     # As a capability's library might, on import.
     print("import-time print")
     os.write(1, b"import-time write\n")
@@ -152,6 +187,8 @@ def main() -> int:
         "stall": registry.Capability(1, table, {}, stall),
         "forks": registry.Capability(1, table, {}, forks),
         "cpu": registry.Capability(1, table, {}, cpu),
+        "unwinds": registry.Capability(1, table, {}, unwinds),
+        "forks_twice": registry.Capability(1, table, {}, forks_twice),
         "threads": registry.Capability(1, frozenset(), {}, threads),
         "mutters": registry.Capability(
             1, table, {"dies": registry.Param(bool)}, mutters

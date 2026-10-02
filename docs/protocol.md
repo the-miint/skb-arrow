@@ -8,9 +8,10 @@ The contract between skb-arrow and its callers. Implementation: `src/skb_arrow/p
 - stdout carries protocol messages only. Before importing anything heavy, the host moves the
   channel to private fds that exec'd children don't inherit; fd 0 then reads `/dev/null`, and
   fd 1 and `sys.stdout` go with fd 2 (below). Library prints, C-level writes to fd 1,
-  `input()`, and exec'd children cannot reach the channel. A `fork()` child finds `/dev/null`
-  in its place, so it can't keep the caller from seeing EOF; only a fork by C code, which
-  skips Python's at-fork hooks, still holds it.
+  `input()`, and exec'd children cannot reach the channel. A `fork()` child of the host finds
+  `/dev/null` in its place, so it can't keep the caller from seeing EOF; its own children keep
+  whatever it put there. Only a fork by C code, which skips Python's at-fork hooks, still
+  holds the channel.
 - stderr carries diagnostics only, and never blocks the host (DESIGN §3.13). At startup,
   before anything but the standard library loads, the host forks a drainer that relays fds 1
   and 2, its own, its libraries', and its children's, to stderr:
@@ -34,8 +35,8 @@ The contract between skb-arrow and its callers. Implementation: `src/skb_arrow/p
     responses: such a caller gets no diagnostics, not even a startup error. On macOS a TCP
     socket has no inode, so `2>&1` onto one goes undetected and corrupts responses.
 - A caller that stops reading mid-call, by closing stdout or dying, stops the host (DESIGN
-  §3.14): once stdout is a pipe or socket with no reader, the host cleans DIR and exits 1,
-  never in the middle of writing an output or a response. It acts only while a capability
+  §3.14): once stdout is a pipe or Unix socket with no reader, the host cleans DIR and exits
+  1, never in the middle of writing an output or a response. It acts only while a capability
   runs, and once the capability leaves any frame that holds the GIL. Idle, the host waits for
   stdin to close. Responses to a file are not watched.
 - Bulk data never rides the control channel; messages name segments

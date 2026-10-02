@@ -11,9 +11,9 @@ Why memory-mapped files, not POSIX shm: DESIGN §3.2. Why chunked: §3.4. Implem
   `chdir` or a symlink can't redirect cleanup. The caller writes no segment before `ready`.
 - Whoever outlives the other cleans DIR: the host on stdin EOF, a broken pipe, or its
   responses going unread mid-call ([`protocol.md`](protocol.md#channel)), the caller after
-  the host exits (`ENOENT` counts as done). So the caller opens every output it needs
-  before closing stdin. Cleanup unlinks DIR's entries, then `rmdir`s it, before any diagnostic
-  write (stderr may be a dead pipe).
+  the host exits (`ENOENT` counts as done). A fork child of the host never cleans it. So the
+  caller opens every output it needs before closing stdin. Cleanup unlinks DIR's entries,
+  then `rmdir`s it, before any diagnostic write (stderr may be a dead pipe).
 
 **Placement:** tmpfs (`/dev/shm`) on Linux, under `$TMPDIR` on macOS. Default Docker containers
 mount a 64 MiB `/dev/shm`; raise `--shm-size` or place DIR elsewhere. No fallback: a full
@@ -50,6 +50,8 @@ framing excluded. A target, not a bound:
 - Both processes killed at once leave DIR behind.
 - A caller killed mid-call leaves the host running until the call leaves any frame that holds
   the GIL, or, with responses to a file, until the call ends.
+- A host stopped mid-call skips the capability's own cleanup: temporary files it made and
+  children it started may be left behind, as when the caller kills the host.
 - The caller is trusted to write valid Arrow: only the structural check runs. A corrupt
   offset or dictionary index that passes it can crash the host. Full validation costs a pass
   over the data (~90 ms/GiB).

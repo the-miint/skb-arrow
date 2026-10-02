@@ -306,6 +306,10 @@ too. Measured in the M4 design review (Linux, Python 3.14):
   takes it and never gives it back (0 of 30). It also can't clean DIR mid-write.
 - A capability blocked in one GIL-holding frame is abandoned only when the frame returns;
   scikit-bio's `mantel` kernels let the watch run.
+- The watch is a thread, so the host is multi-threaded: `os.fork()` in a capability raises
+  CPython's fork-with-threads `DeprecationWarning`, hidden unless warnings are on (`-X dev`).
+  numba's and OpenMP's worker threads bring the same. The watch holds no lock a child could
+  inherit, except while it cleans DIR on its way out.
 
 A bare `fork()` child of a capability held the caller's EOF until it exited (3 s in the
 review's probe). An at-fork hook now points the child's channel fds at `/dev/null` (0 s);

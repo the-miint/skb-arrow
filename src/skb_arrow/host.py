@@ -36,12 +36,15 @@ def reserve() -> tuple[BinaryIO, int]:
     relay = os.open(os.devnull, os.O_WRONLY) if _same_pipe(1, 2) else _start_drainer()
     requests = os.fdopen(os.dup(0), "rb")
     responses = os.dup(1)
+    host, channel = os.getpid(), (requests.fileno(), responses)
+
+    def release() -> None:
+        if os.getppid() == host:  # not a later descendant: it may reuse the numbers
+            _blank(channel)
+
     # A fork child finds /dev/null in their place, so it can't hold the caller's EOF.
-    channel = (requests.fileno(), responses)
-    os.register_at_fork(after_in_child=lambda: _blank(channel))
-    null = os.open(os.devnull, os.O_RDONLY)
-    os.dup2(null, 0)
-    os.close(null)
+    os.register_at_fork(after_in_child=release)
+    _blank((0,))
     os.dup2(relay, 1)
     os.dup2(relay, 2)
     os.close(relay)
@@ -60,9 +63,7 @@ def _start_drainer() -> int:
     if (middle := os.fork()) == 0:
         try:
             if os.fork() == 0:
-                null = os.open(os.devnull, os.O_RDWR)
-                os.dup2(null, 0)
-                os.dup2(null, 1)
+                _blank((0, 1))
                 # Every other fd: the relay's write end, else the relay never reaches
                 # EOF, and any the caller leaked to the host, such as a channel copy.
                 for fd in map(int, os.listdir("/dev/fd")):
@@ -84,16 +85,21 @@ def _blank(fds: tuple[int, ...]) -> None:
     """Point `fds` at /dev/null."""
     null = os.open(os.devnull, os.O_RDWR)
     for fd in fds:
-        os.dup2(null, fd, inheritable=False)
+        os.dup2(null, fd)
     os.close(null)
+
+
+def _piped(mode: int) -> bool:
+    """Whether `mode` is a pipe's or a socket's."""
+    return stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)
 
 
 def _same_pipe(a: int, b: int) -> bool:
     """Whether fds `a` and `b` are one pipe or socket."""
     x, y = os.fstat(a), os.fstat(b)
-    piped = stat.S_ISFIFO(x.st_mode) or stat.S_ISSOCK(x.st_mode)
     # Inode 0 identifies nothing: macOS gives it to every TCP socket.
-    return piped and x.st_ino != 0 and (x.st_dev, x.st_ino) == (y.st_dev, y.st_ino)
+    same = x.st_ino != 0 and (x.st_dev, x.st_ino) == (y.st_dev, y.st_ino)
+    return _piped(x.st_mode) and same
 
 
 def _drain(source: int) -> None:
@@ -165,6 +171,7 @@ def serve(directory: Path, requests: BinaryIO, responses: int) -> int:
         return 2
     # Absolute and link-free, so a later chdir can't redirect cleanup.
     directory = directory.resolve()
+    host = os.getpid()
     try:
         from skb_arrow import protocol  # loads pyarrow and every capability
 
@@ -175,7 +182,8 @@ def serve(directory: Path, requests: BinaryIO, responses: int) -> int:
     except BrokenPipeError:
         return 1
     finally:
-        _clean(directory)
+        if os.getpid() == host:  # not a fork child unwinding into this frame
+            _clean(directory)
     return 0
 
 
@@ -184,8 +192,7 @@ def _watch(responses: int, lock: threading.Lock, directory: Path) -> None:
 
     The session holds `lock` except while a capability runs (DESIGN §3.14).
     """
-    mode = os.fstat(responses).st_mode
-    if not (stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)):
+    if not _piped(os.fstat(responses).st_mode):
         return  # a file has no reader to lose
 
     def watch() -> None:
@@ -193,6 +200,8 @@ def _watch(responses: int, lock: threading.Lock, directory: Path) -> None:
         lock.acquire()  # never released: the session writes nothing more
         try:
             _clean(directory)
+        except OSError as e:  # the caller may be gone; its stderr may not
+            print(f"skb-arrow: cleaning {directory}: {e}", file=sys.stderr, flush=True)
         finally:
             os._exit(1)
 
@@ -204,7 +213,10 @@ def _await_no_reader(fd: int) -> None:
     if sys.platform == "darwin":  # its poll reports nothing unasked
         queue = select.kqueue()
         flags = select.KQ_EV_ADD | select.KQ_EV_CLEAR  # on a change, not while writable
-        queue.control([select.kevent(fd, select.KQ_FILTER_WRITE, flags)], 0)
+        try:
+            queue.control([select.kevent(fd, select.KQ_FILTER_WRITE, flags)], 0)
+        except BrokenPipeError:  # gone before the watch began
+            return
         while not any(e.flags & select.KQ_EV_EOF for e in queue.control(None, 1)):
             pass
     else:
