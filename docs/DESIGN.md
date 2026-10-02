@@ -446,6 +446,15 @@ documented; adding a capability requires touching only `capabilities/` and the r
 **Done when:** a soak run leaves no orphans; numba tier is exercised in CI; stderr cannot wedge
 the host.
 
+The soak (`tests/test_soak.py`, in the default suite): one host, 64 KiB segments, 20 rounds of
+`echo` (1 MiB in 4 segments), `ancombc`, `mantel` (30 IDs), an `invalid_input` and an
+`invalid_param` call, and a probe of the host's open fds and Arrow's allocated bytes. Every
+round answers as round 0 did and leaves DIR empty once fetched; fds and Arrow's bytes hold from
+round 1, and RSS grows less than 8 MiB. Shut down with an output unread, the host exits 0,
+removes DIR, leaves its `TMPDIR` empty and stderr free of tracebacks, and its process group
+empties within 5 s, as it does after SIGKILL with numba's threads running. A fresh host and
+one 20 calls warm write byte-identical outputs, with the same warnings.
+
 ### M5 — Release
 - PyPI publish via trusted publishing; version/compat policy (§4) enforced in code and tested
 - `skb-arrow doctor` reporting interpreter, versions, extras, and transport placement

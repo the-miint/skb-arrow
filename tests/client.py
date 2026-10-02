@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,18 @@ SKB_ARROW = [str(Path(sys.executable).parent / "skb-arrow")]
 INIT = {"type": "init", "protocol_version": 1}
 # Where a caller places DIR (docs/transport.md#session-directory).
 PLACE = "/dev/shm" if sys.platform == "linux" else tempfile.gettempdir()
+
+
+def emptied(group: int, within: float) -> bool:
+    """Whether process group `group` has no members left within `within` seconds."""
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
 
 
 class Client:

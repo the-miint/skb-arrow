@@ -142,6 +142,24 @@ def threads(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.
     return pa.table({})
 
 
+def probe(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    """The host's open fds, Arrow's allocated bytes, and numba's threading layer."""
+    import pyarrow as pa  # here: nothing heavy loads before host.reserve()
+    from numba.np.ufunc.parallel import threading_layer
+
+    try:
+        layer = threading_layer()  # type: ignore[no-untyped-call]
+    except ValueError:  # no parallel kernel has run
+        layer = None
+    return pa.table(
+        {
+            "fds": [len(os.listdir("/dev/fd"))],
+            "arrow_bytes": [pa.total_allocated_bytes()],
+            "layer": pa.array([layer], pa.string()),
+        }
+    )
+
+
 def childless(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
     """Fails if the host has a child, live or a zombie: code reaping all would wait."""
     try:
@@ -190,6 +208,7 @@ def main() -> int:
         "unwinds": registry.Capability(1, table, {}, unwinds),
         "forks_twice": registry.Capability(1, table, {}, forks_twice),
         "threads": registry.Capability(1, frozenset(), {}, threads),
+        "probe": registry.Capability(1, frozenset(), {}, probe),
         "mutters": registry.Capability(
             1, table, {"dies": registry.Param(bool)}, mutters
         ),

@@ -16,7 +16,7 @@ from typing import Any
 
 import pyarrow as pa
 import pytest
-from client import FIXTURE, INIT, SKB_ARROW, Client
+from client import FIXTURE, INIT, SKB_ARROW, Client, emptied
 from pyarrow import ipc
 
 from skb_arrow import host, registry
@@ -293,18 +293,6 @@ def test_the_channel_survives_a_closed_stderr(connect: Callable[..., Client]) ->
 
 FLOOD = 4 << 20  # far past any pipe's buffer
 DROPPED = re.compile(rb"\nskb-arrow: (\d+) bytes of stderr dropped\n")
-
-
-def emptied(group: int, within: float) -> bool:
-    """Whether process group `group` has no members left within `within` seconds."""
-    deadline = time.monotonic() + within
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(group, 0)
-        except ProcessLookupError:
-            return True
-        time.sleep(0.05)
-    return False
 
 
 def read_to_eof(fd: int, within: float, size: int = 1 << 16, pause: float = 0) -> bytes:
