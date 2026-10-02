@@ -39,7 +39,7 @@ filesystem fails the call with `resource`.
   `validate()`).
 
 ## Splitting
-Why bytes as written: DESIGN §3.15.
+Why bytes as written, and the default: DESIGN §3.15.
 
 `segment_bytes` (from `init`, default 256 MiB) caps each segment's bytes as written, less its
 schema and the dictionaries its first batch carries. A target, not a bound:
@@ -67,6 +67,3 @@ schema and the dictionaries its first batch carries. A target, not a bound:
   cap repeats in each.
 - A batch that halving can't shrink is written whole, however far past the cap: a view
   column whose data is larger than the cap stays in one segment.
-
-## Open (M4)
-- The default cap: set by the `large` workflow's timings (DESIGN §3.15).

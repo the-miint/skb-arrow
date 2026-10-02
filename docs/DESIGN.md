@@ -337,12 +337,29 @@ segments, 32 MB; with it, 1 segment, 95 KB, and 32, 1.3 MB.
 No protocol bump: `segment_bytes` was always a target, not a bound, and the wire format is
 unchanged.
 
-The default cap is settled by timing, on a rule fixed before the run: the largest cap ≤ 512
+The default cap was settled by timing, on a rule fixed before the run: the largest cap ≤ 512
 MiB whose macOS 2 GiB read time is within 1.1× of the fastest, keeping 256 MiB if it
-qualifies. If whole-table reads are flat across caps but streamed reads aren't, §3.4 is
-revised to say chunking serves streaming callers. On Linux, in the design review, a 2 GiB
-read took the same time whatever the segment count, warm or evicted. The `large` workflow
-(manual dispatch) runs the multi-GiB tests and `tests/segment_timing.py` on both platforms.
+qualifies; and if whole-table reads were flat across caps but streamed reads weren't, §3.4
+would be revised to say chunking serves streaming callers. The `large` workflow (manual
+dispatch) runs the multi-GiB tests and `tests/segment_timing.py` on both platforms.
+
+Its first run (37062727264, `f86f4aa`) kept 256 MiB. 2 GiB, medians of 3, seconds; macOS
+(5 CPUs, 14 GiB) read cold from APFS after `purge`, Linux (2 vCPUs, 7.8 GiB) from tmpfs:
+
+| Cap | Segments | macOS whole | macOS streamed | Linux whole | Linux streamed |
+|---|---|---|---|---|---|
+| 16 MiB | 171 | 0.630 | 0.696 | 0.184 | 0.262 |
+| 64 MiB | 35 | 0.907 | 0.655 | 0.175 | 0.251 |
+| 256 MiB | 9 | 0.686 | 0.664 | 0.174 | 0.247 |
+| 1024 MiB | 3 | 1.253 | 0.682 | 0.175 | 0.246 |
+| one segment | 1 | 0.682 | 0.732 | 0.186 | 0.189 |
+
+256 MiB qualified in both macOS modes, whole by a thin margin (0.686 against 0.693). macOS
+cold reads are noisy, varying 2× with no trend in the cap: weak evidence, but no cap stood
+out. §3.4 stands. On macOS the streamed reads were the flat ones. On Linux streamed reads
+were slower chunked, but that is each segment unmapped as the read moves on, which one
+segment pays after the timer stops: holding every batch until then, a local 2 GiB streamed
+read took 0.097–0.099 s at 171, 9 and 1 segments (0.112–0.115 s chunked, released as read).
 
 ---
 
