@@ -45,9 +45,12 @@ Why bytes as written: DESIGN §3.15.
 schema and the dictionaries its first batch carries. A target, not a bound:
 - Batches are packed greedily, in order. Each counts the bytes its write adds: its message,
   and any dictionary that differs from the batch before's.
-- A batch whose message alone is over the cap is halved until it fits or is one row.
-- So a segment passes the cap only by its schema and first batch's dictionaries, or by a row
-  too big alone.
+- A batch whose message alone is over the cap is halved until it fits or is one row. It is
+  written whole instead when a half is still over the cap and both halves keep more than 3/4
+  of its message: a cost every slice pays, such as a view column's data or a wide schema's
+  metadata.
+- So a segment passes the cap only by its schema, its first batch's dictionaries and the
+  8-byte end marker, or by one batch that halving can't shrink.
 
 ## Residuals
 - Both processes killed at once leave DIR behind.
@@ -62,6 +65,8 @@ schema and the dictionaries its first batch carries. A target, not a bound:
   compressed length reports `resource`.
 - A dictionary is written whole in every segment whose batches use it, so one larger than the
   cap repeats in each.
+- A batch that halving can't shrink is written whole, however far past the cap: a view
+  column whose data is larger than the cap stays in one segment.
 
 ## Open (M4)
 - The default cap: set by the `large` workflow's timings (DESIGN §3.15).

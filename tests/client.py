@@ -5,6 +5,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 from contextlib import suppress
 from pathlib import Path
@@ -18,6 +19,8 @@ from skb_arrow import transport
 FIXTURE = [sys.executable, str(Path(__file__).with_name("fixture_host.py"))]
 SKB_ARROW = [str(Path(sys.executable).parent / "skb-arrow")]
 INIT = {"type": "init", "protocol_version": 1}
+# Where a caller places DIR (docs/transport.md#session-directory).
+PLACE = "/dev/shm" if sys.platform == "linux" else tempfile.gettempdir()
 
 
 class Client:

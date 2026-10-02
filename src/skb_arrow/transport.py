@@ -106,16 +106,17 @@ def _load(directory: Path, name: str) -> tuple[pa.Schema, list[pa.RecordBatch]]:
 def _pack(table: pa.Table, cap: int) -> Iterator[list[pa.RecordBatch]]:
     """Groups of batches, one per segment: greedy, in order, at least one.
 
-    Counted as written (docs/transport.md#splitting), on a mock stream: it counts bytes,
-    copying none. One serves every segment: a batch writes a dictionary only if it
-    differs from the batch before's, as in a fresh stream, and a segment's first batch
-    counts its message alone.
+    Counted as written (docs/transport.md#splitting), on a mock stream: it keeps no
+    bytes, though a slice's offsets and bitmaps are rebased, as in the real write. One
+    serves every segment: a batch writes a dictionary only if it differs from the batch
+    before's, as in a fresh stream, and a segment's first batch counts its message
+    alone.
     """
     group: list[pa.RecordBatch] = []
     size = 0
     mock = pa.MockOutputStream()
     writer = ipc.new_stream(mock, table.schema)
-    for batch in (piece for b in table.to_batches() for piece in _split(b, cap)):
+    for batch, alone in (p for b in table.to_batches() for p in _split(b, cap)):
         before = mock.size()
         writer.write_batch(batch)
         if group and size + (grown := mock.size() - before) <= cap:
@@ -124,17 +125,27 @@ def _pack(table: pa.Table, cap: int) -> Iterator[list[pa.RecordBatch]]:
             continue
         if group:
             yield group
-        group, size = [batch], ipc.get_record_batch_size(batch)
+        group, size = [batch], alone
     yield group
 
 
-def _split(batch: pa.RecordBatch, cap: int) -> Iterator[pa.RecordBatch]:
-    """`batch` in pieces, halved until each one's message fits `cap` or is one row."""
-    if batch.num_rows <= 1 or ipc.get_record_batch_size(batch) <= cap:
-        yield batch
-        return
-    for half in batch.slice(0, batch.num_rows // 2), batch.slice(batch.num_rows // 2):
-        yield from _split(half, cap)
+def _split(
+    batch: pa.RecordBatch, cap: int, size: int | None = None
+) -> Iterator[tuple[pa.RecordBatch, int]]:
+    """`batch` in pieces, with their messages' sizes: halved until each fits `cap`, is
+    one row, or would keep more than 3/4 of its size halved."""
+    if size is None:
+        size = int(ipc.get_record_batch_size(batch))
+    if size > cap and batch.num_rows > 1:
+        halves = batch.slice(0, batch.num_rows // 2), batch.slice(batch.num_rows // 2)
+        sizes = [int(ipc.get_record_batch_size(half)) for half in halves]
+        # Kept whole past 3/4: a cost every slice pays (a view column's data, a wide
+        # schema's metadata), which halving multiplies.
+        if max(sizes) <= cap or 4 * min(sizes) <= 3 * size:
+            for half, half_size in zip(halves, sizes, strict=True):
+                yield from _split(half, cap, half_size)
+            return
+    yield batch, size
 
 
 def _create(path: Path) -> BinaryIO:

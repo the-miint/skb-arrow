@@ -4,7 +4,8 @@ python tests/segment_timing.py [--purge] >> "$GITHUB_STEP_SUMMARY"
 
 Each payload is written at each cap where a caller places DIR; each read runs in a fresh
 process after `sync`, and with --purge (macOS) after `purge` too, so it starts cold.
-Prints Markdown: median read times, and the cap the rule fixed in DESIGN §3.15 picks.
+Prints Markdown: segments written and median read times by cap (framing counts, so a cap
+holds fewer batches than it divides), and the cap the rule fixed in DESIGN §3.15 picks.
 """
 
 import argparse
@@ -21,6 +22,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+from client import PLACE
 from pyarrow import ipc
 
 from skb_arrow import transport
@@ -92,19 +94,20 @@ def main() -> None:
     if args.read:
         print(read(args.read[0], args.read[1:]))
         return
-    place = "/dev/shm" if sys.platform == "linux" else tempfile.gettempdir()
-    print(f"### Segment read times: {sys.platform}, in {place}\n")
+    print(f"### Segment read times: {sys.platform}, in {PLACE}\n")
     reads = "cold" if args.purge else "as cached"
     print(f"Median of {REPEATS}, seconds; reads {reads}.\n")
     for total in PAYLOADS:
         table = payload(total)
         times: dict[str, dict[int | None, float]] = {m: {} for m in MODES}
+        segments: dict[int | None, int] = {}
         for cap in CAPS:
-            directory = Path(tempfile.mkdtemp(dir=place))
+            directory = Path(tempfile.mkdtemp(dir=PLACE))
             try:
                 names = transport.write(
                     directory, table, cap or 1 << 62, itertools.count()
                 )
+                segments[cap] = len(names)
                 paths = [str(directory / name) for name in names]
                 for mode in MODES:
                     runs = [timed(mode, paths, args.purge) for _ in range(REPEATS)]
@@ -112,11 +115,11 @@ def main() -> None:
             finally:
                 shutil.rmtree(directory)
         del table
-        print(f"| {total // GiB} GiB | " + " | ".join(MODES) + " |")
-        print("|---|" + "---|" * len(MODES))
+        print(f"| {total // GiB} GiB | segments | " + " | ".join(MODES) + " |")
+        print("|---|---|" + "---|" * len(MODES))
         for cap in CAPS:
             cells = " | ".join(f"{times[m][cap]:.3f}" for m in MODES)
-            print(f"| {label(cap)} | {cells} |")
+            print(f"| {label(cap)} | {segments[cap]} | {cells} |")
         picks = ", ".join(f"{m}: {pick(times[m])}" for m in MODES)
         print(f"\nThe rule picks {picks}.\n")
 

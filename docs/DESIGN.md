@@ -325,8 +325,14 @@ segments, 552,800 bytes, against 23,744 as one). The stream writer writes an unc
 dictionary once per stream, so in the M4 design review counting a dictionary once per segment
 still wrote 100 segments, while counting bytes as written, a segment's schema and first
 batch's dictionaries exempt, wrote 7. The host measures with pyarrow's own serializer
-(`MockOutputStream`, `get_record_batch_size`), which counts buffers without copying them.
-Halving no longer needs M2's 75% rule: a slice's message doesn't count its dictionary.
+(`MockOutputStream`, `get_record_batch_size`), which keeps no bytes; it rebases a slice's
+offsets and bitmaps, as a real write does (42 MiB peak for a 10M-row string slice).
+
+M2's 75% rule stays, on messages. A slice's message doesn't carry its dictionary, but it
+carries a view column's data buffers whole, and a wide schema's per-message metadata
+doesn't halve. Without the rule (the Phase 3 review), 800 `string_view` rows (95 KB) at a
+64 KiB cap wrote 800 segments, 66 MB, and 300 `int8` columns × 1000 rows at 8 KiB wrote 1000
+segments, 32 MB; with it, 1 segment, 95 KB, and 32, 1.3 MB.
 
 No protocol bump: `segment_bytes` was always a target, not a bound, and the wire format is
 unchanged.

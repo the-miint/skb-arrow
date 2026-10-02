@@ -3,7 +3,6 @@
 import itertools
 import os
 import shutil
-import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -11,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pytest
-from client import INIT, SKB_ARROW, Client
+from client import INIT, PLACE, SKB_ARROW, Client
 from pyarrow import ipc
 
 from skb_arrow import protocol, transport
@@ -43,8 +42,7 @@ def assert_counting(table: pa.Table, total: int) -> None:
 @pytest.fixture
 def directory() -> Iterator[Path]:
     """An empty DIR, placed as a caller would (docs/transport.md#session-directory)."""
-    place = "/dev/shm" if sys.platform == "linux" else tempfile.gettempdir()
-    parent = Path(tempfile.mkdtemp(dir=place))
+    parent = Path(tempfile.mkdtemp(dir=PLACE))
     directory = parent / "session"
     directory.mkdir()
     yield directory
@@ -79,7 +77,8 @@ def test_past_2_gib_round_trips_through_the_host(directory: Path) -> None:
         del output
         assert client.shut() == 0
         assert not directory.exists()
-        # The input is mapped, not copied, and outputs are written, not mapped.
+        # One copy resident at most: a second (a copied input, an output built in
+        # memory) fails. Mapped pages count, so a copy in place of the map passes.
         assert client.peak_rss < 1.5 * total
     finally:
         client.kill()

@@ -123,6 +123,41 @@ def test_one_huge_row_is_isolated_and_the_rest_packed(
     assert transport.read(tmp_path, names).equals(table)
 
 
+def view_heavy(chars: int) -> pa.Table:
+    """1000 rows of `chars` characters in a view column: slices write all its data."""
+    strings = pa.array([f"{i:0{chars}d}" for i in range(1000)], pa.string_view())
+    return pa.table({"s": strings})
+
+
+@pytest.mark.parametrize(("chars", "segments"), [(24, 1), (13, 2)])
+def test_halving_stops_once_both_halves_keep_over_3_4(
+    tmp_path: Path, chars: int, segments: int
+) -> None:
+    # Halves keep 80%, or 73% and their quarters 81%.
+    table = view_heavy(chars)
+    names = write(tmp_path, table, 1000)
+    assert len(names) == segments
+    assert sum((tmp_path / n).stat().st_size for n in names) < 2 * len(stream(table))
+    assert transport.read(tmp_path, names).equals(table)
+
+
+def test_halves_that_fit_are_kept_even_when_they_share_a_buffer(
+    tmp_path: Path,
+) -> None:
+    table = view_heavy(24)  # halves keep 80%
+    names = write(tmp_path, table, written(table, 0, 500))
+    assert rows_per_segment(tmp_path, names) == [500, 500]
+
+
+def test_a_cost_every_message_pays_is_not_halved(tmp_path: Path) -> None:
+    # 300 columns' metadata alone is over the cap, and each buffer pads to 8 bytes.
+    batch = pa.record_batch({f"c{i}": pa.array([1] * 8, pa.int8()) for i in range(300)})
+    table = pa.Table.from_batches([batch] * 10)
+    names = write(tmp_path, table, 8192)
+    assert rows_per_segment(tmp_path, names) == [8] * 10
+    assert transport.read(tmp_path, names).equals(table)
+
+
 def shared_dictionary(dictionary_bytes: int, batches: int = 100) -> pa.Table:
     """`batches` batches of 100 rows, all indexing one `dictionary_bytes` dictionary."""
     dictionary = pa.array([f"{i:0{dictionary_bytes // 100}d}" for i in range(100)])
