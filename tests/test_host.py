@@ -17,6 +17,7 @@ from typing import Any
 import pyarrow as pa
 import pytest
 from client import FIXTURE, INIT, SKB_ARROW, Client
+from pyarrow import ipc
 
 from skb_arrow import host, registry
 
@@ -57,7 +58,8 @@ def test_echo_round_trips_segments_and_shutdown_removes_dir(
     connect: Callable[..., Client], directory: Path
 ) -> None:
     client = connect(SKB_ARROW)
-    ready = client.send(INIT | {"segment_bytes": 1024})
+    (batch,) = TABLE.slice(0, 125).to_batches()  # 125 rows as written fill the cap
+    ready = client.send(INIT | {"segment_bytes": ipc.get_record_batch_size(batch)})
     assert ready["capabilities"] == registry.schema_versions()
     names = [client.put(f"in-{i}", TABLE.slice(i * 250, 250)) for i in range(4)]
     result = client.send(call("echo", "unused") | {"input": {"table": names}})

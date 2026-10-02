@@ -1,0 +1,39 @@
+name: Large
+
+# Multi-GiB payloads and the segment-cap timings (DESIGN §3.15): run by hand.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  large:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Runner resources
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            nproc; free -h; df -h / /dev/shm
+          else
+            sysctl -n hw.ncpu hw.memsize; vm_stat; df -h / "$TMPDIR"
+          fi
+      # tmpfs defaults to half of RAM: the 2 GiB test needs its input and output there.
+      - if: runner.os == 'Linux'
+        run: sudo mount -o remount,size=80% /dev/shm && df -h /dev/shm
+      - run: uv run --locked pytest -m large -v
+      - name: Segment read times
+        if: ${{ !cancelled() }}
+        run: |
+          purge=""
+          if [ "$RUNNER_OS" = macOS ]; then purge=--purge; fi
+          uv run --locked python tests/segment_timing.py $purge | tee -a "$GITHUB_STEP_SUMMARY"

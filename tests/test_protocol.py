@@ -202,7 +202,8 @@ def test_a_call_before_init_is_rejected_and_its_segments_disposed(
 
 def test_echo_round_trips_a_table_across_segments(tmp_path: Path) -> None:
     session = protocol.Session(tmp_path)
-    send(session, INIT | {"segment_bytes": 1024})
+    (batch,) = TABLE.slice(0, 125).to_batches()
+    send(session, INIT | {"segment_bytes": ipc.get_record_batch_size(batch)})
     names = [put(tmp_path, f"in-{i}", TABLE.slice(i * 250, 250)) for i in range(4)]
     response = send(session, call({"table": names}, id=1))
     assert (response["type"], response["id"], response.get("warnings")) == (
@@ -210,7 +211,7 @@ def test_echo_round_trips_a_table_across_segments(tmp_path: Path) -> None:
         1,
         [],
     )
-    # 8000 bytes under a 1024 cap: eight 125-row segments.
+    # 125 rows as written fill the cap: eight 125-row segments.
     assert len(response["output"]) == 8
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(response["output"])
     assert transport.read(tmp_path, response["output"]).equals(TABLE)

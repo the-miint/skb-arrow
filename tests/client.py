@@ -42,6 +42,7 @@ class Client:
             **popen,
         )
         self.errors = bytearray()
+        self.peak_rss = 0  # bytes, once shut
         self.drain = threading.Thread(target=self._drain, daemon=True)
         if self.process.stderr:
             self.drain.start()
@@ -99,9 +100,12 @@ class Client:
         assert self.process.stdin and self.process.stdout
         self.process.stdin.close()
         self.process.stdout.close()
-        status = self.process.wait()
+        _, status, usage = os.wait4(self.process.pid, 0)
+        self.process.returncode = os.waitstatus_to_exitcode(status)
+        # macOS reports bytes, Linux KiB.
+        self.peak_rss = usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024)
         self.watchdog.cancel()
-        return status
+        return self.process.returncode
 
     def kill(self) -> None:
         """Stop the host and all it started, if they still run: test teardown."""

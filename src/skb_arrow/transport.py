@@ -46,7 +46,7 @@ def write(
     """Segment names holding `table`, named from `counter`; a failure leaves none."""
     names: list[str] = []
     try:
-        for group in _pack(table.to_batches(), cap):
+        for group in _pack(table, cap):
             name = f"{_OUTPUT}{next(counter)}"
             with _create(directory / name) as file:
                 names.append(name)
@@ -103,30 +103,37 @@ def _load(directory: Path, name: str) -> tuple[pa.Schema, list[pa.RecordBatch]]:
         return reader.schema, batches
 
 
-def _pack(batches: list[pa.RecordBatch], cap: int) -> Iterator[list[pa.RecordBatch]]:
-    """Groups of batches, one per segment: greedy, in order, at least one."""
+def _pack(table: pa.Table, cap: int) -> Iterator[list[pa.RecordBatch]]:
+    """Groups of batches, one per segment: greedy, in order, at least one.
+
+    Counted as written (docs/transport.md#splitting), on a mock stream: it counts bytes,
+    copying none. One serves every segment: a batch writes a dictionary only if it
+    differs from the batch before's, as in a fresh stream, and a segment's first batch
+    counts its message alone.
+    """
     group: list[pa.RecordBatch] = []
     size = 0
-    for batch in (piece for b in batches for piece in _split(b, cap)):
-        if group and size + batch.nbytes > cap:
+    mock = pa.MockOutputStream()
+    writer = ipc.new_stream(mock, table.schema)
+    for batch in (piece for b in table.to_batches() for piece in _split(b, cap)):
+        before = mock.size()
+        writer.write_batch(batch)
+        if group and size + (grown := mock.size() - before) <= cap:
+            group.append(batch)
+            size += grown
+            continue
+        if group:
             yield group
-            group, size = [], 0
-        group.append(batch)
-        size += batch.nbytes
+        group, size = [batch], ipc.get_record_batch_size(batch)
     yield group
 
 
 def _split(batch: pa.RecordBatch, cap: int) -> Iterator[pa.RecordBatch]:
-    if batch.nbytes <= cap or batch.num_rows <= 1:
+    """`batch` in pieces, halved until each one's message fits `cap` or is one row."""
+    if batch.num_rows <= 1 or ipc.get_record_batch_size(batch) <= cap:
         yield batch
         return
-    halves = batch.slice(0, batch.num_rows // 2), batch.slice(batch.num_rows // 2)
-    sizes = [half.nbytes for half in halves]
-    # A shared buffer (a dictionary) counts in full in every slice.
-    if max(sizes) > cap and 4 * min(sizes) > 3 * batch.nbytes:
-        yield batch
-        return
-    for half in halves:
+    for half in batch.slice(0, batch.num_rows // 2), batch.slice(batch.num_rows // 2):
         yield from _split(half, cap)
 
 

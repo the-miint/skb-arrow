@@ -317,6 +317,27 @@ closing them instead would leave the Python objects owning numbers the child may
 `multiprocessing` execs its children on Linux 3.14 (forkserver) and macOS (spawn) anyway.
 Rules: [`protocol.md`](protocol.md#channel).
 
+### 3.15 Segment sizing: bytes as written
+
+M2 capped a segment's sum of batch `nbytes`, which counts a shared dictionary in full for every
+batch: batches sharing one near the cap's size packed one per segment, each rewriting it (100
+segments, 552,800 bytes, against 23,744 as one). The stream writer writes an unchanged
+dictionary once per stream, so in the M4 design review counting a dictionary once per segment
+still wrote 100 segments, while counting bytes as written, a segment's schema and first
+batch's dictionaries exempt, wrote 7. The host measures with pyarrow's own serializer
+(`MockOutputStream`, `get_record_batch_size`), which counts buffers without copying them.
+Halving no longer needs M2's 75% rule: a slice's message doesn't count its dictionary.
+
+No protocol bump: `segment_bytes` was always a target, not a bound, and the wire format is
+unchanged.
+
+The default cap is settled by timing, on a rule fixed before the run: the largest cap ≤ 512
+MiB whose macOS 2 GiB read time is within 1.1× of the fastest, keeping 256 MiB if it
+qualifies. If whole-table reads are flat across caps but streamed reads aren't, §3.4 is
+revised to say chunking serves streaming callers. On Linux, in the design review, a 2 GiB
+read took the same time whatever the segment count, warm or evicted. The `large` workflow
+(manual dispatch) runs the multi-GiB tests and `tests/segment_timing.py` on both platforms.
+
 ---
 
 ## 4. Versioning and compatibility

@@ -39,12 +39,15 @@ filesystem fails the call with `resource`.
   `validate()`).
 
 ## Splitting
-`segment_bytes` (from `init`, default 256 MiB) caps each segment's sum of batch `nbytes`, IPC
-framing excluded. A target, not a bound:
-- Batches are packed greedily, in order.
-- An over-cap batch is halved until it fits or is one row. It is written whole instead when a
-  half is still over the cap and both halves keep more than 75% of its `nbytes` (a shared
-  buffer, such as a dictionary).
+Why bytes as written: DESIGN §3.15.
+
+`segment_bytes` (from `init`, default 256 MiB) caps each segment's bytes as written, less its
+schema and the dictionaries its first batch carries. A target, not a bound:
+- Batches are packed greedily, in order. Each counts the bytes its write adds: its message,
+  and any dictionary that differs from the batch before's.
+- A batch whose message alone is over the cap is halved until it fits or is one row.
+- So a segment passes the cap only by its schema and first batch's dictionaries, or by a row
+  too big alone.
 
 ## Residuals
 - Both processes killed at once leave DIR behind.
@@ -57,10 +60,8 @@ framing excluded. A target, not a bound:
   over the data (~90 ms/GiB).
 - A compressed stream is read, but decompressed onto the heap, not mapped; a corrupt
   compressed length reports `resource`.
-- `nbytes` counts a shared dictionary in full for every batch, so batches sharing a dictionary
-  near the cap's size pack one per segment, each rewriting it (measured: 100 segments,
-  552,800 bytes, against 23,744 as one).
+- A dictionary is written whole in every segment whose batches use it, so one larger than the
+  cap repeats in each.
 
 ## Open (M4)
-- The default cap and the chunk-size policy, including counting a dictionary once per
-  segment.
+- The default cap: set by the `large` workflow's timings (DESIGN §3.15).
