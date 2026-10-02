@@ -4,6 +4,7 @@ import signal
 import stat
 import sys
 import threading
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -13,6 +14,8 @@ from typing import BinaryIO
 
 _BACKLOG = 1 << 20  # stderr held while nobody reads it; the oldest goes first
 _DROPPED = "\nskb-arrow: {} bytes of stderr dropped\n"
+_PARTIAL = 0.05  # seconds a line without its newline waits for it
+_STALLED = 1  # seconds stderr may take no write, once the host is gone
 
 
 def reserve() -> tuple[BinaryIO, int]:
@@ -20,7 +23,8 @@ def reserve() -> tuple[BinaryIO, int]:
 
     Call first. Exec'd children don't inherit the copies. fd 0 then reads /dev/null;
     fds 1 and 2, and sys.stdout, write to a drainer that relays them to stderr without
-    ever blocking the host (docs/protocol.md#channel).
+    ever blocking the host, or to /dev/null if stderr is the channel's
+    (docs/protocol.md#channel).
     """
     for fd in range(3):
         try:
@@ -28,7 +32,8 @@ def reserve() -> tuple[BinaryIO, int]:
         except OSError:
             # Missing: fill it, or the dups below would land on it.
             os.open(os.devnull, os.O_RDWR)
-    relay = _start_drainer()
+    # `2>&1`: stderr is discarded, not mixed into responses.
+    relay = os.open(os.devnull, os.O_WRONLY) if _same_pipe(1, 2) else _start_drainer()
     requests = os.fdopen(os.dup(0), "rb")
     responses = os.dup(1)
     null = os.open(os.devnull, os.O_RDONLY)
@@ -46,18 +51,28 @@ def _start_drainer() -> int:
 
     Before the channel is copied, so the drainer never holds it, and before any thread.
     """
-    into_channel = _same_pipe(1, 2)  # `2>&1`
     source, relay = os.pipe()
-    if os.fork() == 0:
+    # Forked twice: the middle process exits at once, so the drainer is never the host's
+    # child, which host code reaping every child would wait on.
+    if (middle := os.fork()) == 0:
         try:
-            os.close(relay)  # else the relay never reaches EOF
-            null = os.open(os.devnull, os.O_RDWR)
-            for fd in (0, 1, 2) if into_channel else (0, 1):
-                os.dup2(null, fd)
-            os.close(null)
-            _drain(source)
-        finally:
-            os._exit(0)  # never back into the host's code
+            if os.fork() == 0:
+                null = os.open(os.devnull, os.O_RDWR)
+                os.dup2(null, 0)
+                os.dup2(null, 1)
+                # Every other fd: the relay's write end, else the relay never reaches
+                # EOF, and any the caller leaked to the host, such as a channel copy.
+                for fd in map(int, os.listdir("/dev/fd")):
+                    if fd > 2 and fd != source:
+                        with suppress(OSError):  # listdir's own, closed already
+                            os.close(fd)
+                _drain(source)
+        except BaseException as e:
+            with suppress(OSError):
+                _send(2, f"skb-arrow: stderr drainer failed: {e!r}\n".encode())
+            os._exit(1)
+        os._exit(0)  # never back into the host's code
+    os.waitpid(middle, 0)
     os.close(source)
     return relay
 
@@ -66,7 +81,8 @@ def _same_pipe(a: int, b: int) -> bool:
     """Whether fds `a` and `b` are one pipe or socket."""
     x, y = os.fstat(a), os.fstat(b)
     piped = stat.S_ISFIFO(x.st_mode) or stat.S_ISSOCK(x.st_mode)
-    return piped and (x.st_dev, x.st_ino) == (y.st_dev, y.st_ino)
+    # Inode 0 identifies nothing: macOS gives it to every TCP socket.
+    return piped and x.st_ino != 0 and (x.st_dev, x.st_ino) == (y.st_dev, y.st_ino)
 
 
 def _drain(source: int) -> None:
@@ -76,32 +92,41 @@ def _drain(source: int) -> None:
     pending = bytearray()
     dropped = 0
     done = False
+    arrived = wrote = time.monotonic()  # when bytes last came in, and last went out
     ready = threading.Condition()
 
-    def due() -> bool:
-        return bool(pending or dropped or done)
+    def take() -> bytes | None:
+        """The next piece to write, or None at the end; holding `ready`, may wait."""
+        nonlocal dropped
+        while True:
+            if dropped:
+                piece, dropped = _DROPPED.format(dropped).encode(), 0
+                return piece
+            # Whole lines within PIPE_BUF: atomic on a pipe others share. A longer line
+            # is cut; a partial one waits a moment for its newline.
+            cut = pending.rfind(b"\n", 0, select.PIPE_BUF) + 1
+            wait = arrived + _PARTIAL - time.monotonic()
+            if not cut and (len(pending) >= select.PIPE_BUF or done or wait <= 0):
+                cut = select.PIPE_BUF
+            if pending and cut:
+                piece = bytes(pending[:cut])
+                del pending[:cut]
+                return piece
+            if done:
+                return None
+            ready.wait(wait if pending else None)
 
     def write() -> None:
         # Blocking writes, in this thread only: a stalled stderr stalls nothing else.
-        nonlocal dropped
+        nonlocal wrote
         while True:
             with ready:
-                ready.wait_for(due)
-                if dropped:
-                    piece, dropped = _DROPPED.format(dropped).encode(), 0
-                elif pending:
-                    # Whole lines within PIPE_BUF: atomic on a pipe others share.
-                    cut = (
-                        pending.rfind(b"\n", 0, select.PIPE_BUF) + 1 or select.PIPE_BUF
-                    )
-                    piece = bytes(pending[:cut])
-                    del pending[:cut]
-                else:
-                    return
+                piece = take()
+            if piece is None:
+                return
             with suppress(OSError):  # a dead stderr loses what it would show
-                view = memoryview(piece)
-                while view:
-                    view = view[os.write(2, view) :]
+                _send(2, piece)
+            wrote = time.monotonic()
 
     writer = threading.Thread(target=write, daemon=True)
     writer.start()
@@ -111,11 +136,15 @@ def _drain(source: int) -> None:
             if (excess := len(pending) - _BACKLOG) > 0:
                 del pending[:excess]
                 dropped += excess
+            arrived = time.monotonic()
             ready.notify()
     with ready:
         done = True
         ready.notify()
-    writer.join(1)  # a stalled stderr can't keep the drainer alive
+    # What's held goes out at stderr's pace, unless it stalls: then the drainer exits.
+    wrote = time.monotonic()
+    while writer.is_alive() and (left := wrote + _STALLED - time.monotonic()) > 0:
+        writer.join(left)
 
 
 def serve(directory: Path, requests: BinaryIO, responses: int) -> int:

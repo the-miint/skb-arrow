@@ -5,10 +5,12 @@ import re
 import select
 import signal
 import socket
+import stat
 import subprocess
 import threading
 import time
 from collections.abc import Callable, Iterator
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +18,7 @@ import pyarrow as pa
 import pytest
 from client import FIXTURE, INIT, SKB_ARROW, Client
 
-from skb_arrow import registry
+from skb_arrow import host, registry
 
 TABLE = pa.table({"a": pa.array(range(1000), pa.int64())})
 
@@ -187,6 +189,18 @@ def emptied(group: int, within: float) -> bool:
     return False
 
 
+def read_to_eof(fd: int, within: float, size: int = 1 << 16, pause: float = 0) -> bytes:
+    """Pipe `fd` to EOF, `size` bytes a read, `pause` s apart; fails past `within` s."""
+    data, deadline = bytearray(), time.monotonic() + within
+    while (left := deadline - time.monotonic()) > 0:
+        if select.select([fd], [], [], left)[0]:
+            if not (chunk := os.read(fd, size)):
+                return bytes(data)
+            data += chunk
+            time.sleep(pause)
+    pytest.fail(f"no EOF within {within} s")
+
+
 @pytest.mark.parametrize("how", ["print", "fd1", "fd2", "gil", "child"])
 @pytest.mark.parametrize("sink", ["pipe", "pty"])
 def test_an_unread_stderr_cannot_wedge_the_host(
@@ -243,17 +257,48 @@ def test_a_nonblocking_stderr_costs_pieces_not_the_writer(
     assert log.endswith(b"last words\n")
 
 
-def test_dropped_stderr_is_counted_and_the_last_words_kept(
+def test_a_line_without_its_newline_still_shows(
     connect: Callable[..., Client],
+) -> None:
+    client = connect(FIXTURE)
+    client.send(INIT)
+    client.send(call("mutters", client.put("a", TABLE), dies=False))
+    deadline = time.monotonic() + 5
+    while b"no newline" not in client.errors and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert client.errors.endswith(b"no newline")  # while the host still runs
+    assert client.shut() == 0
+
+
+def test_a_line_without_its_newline_outlives_the_host(
+    connect: Callable[..., Client],
+) -> None:
+    client = connect(FIXTURE)
+    client.send(INIT)
+    client.write(call("mutters", client.put("a", TABLE), dies=True))
+    assert client.shut() == -signal.SIGKILL
+    assert client.stderr().endswith("no newline")
+
+
+# Slow: 4 KiB per 10 ms, so the 1 MiB held takes the drainer seconds to write.
+# Late: stalled past the drainer's 1 s before the host exits, read only after.
+@pytest.mark.parametrize(
+    ("stall", "pause"),
+    [(0, 0), (0, 0.01), (1.5, 0)],
+    ids=["fast reader", "slow reader", "late reader"],
+)
+def test_dropped_stderr_is_counted_and_the_last_words_kept(
+    connect: Callable[..., Client], stall: float, pause: float
 ) -> None:
     unread, stderr = os.pipe()
     client = connect(FIXTURE, timeout=10, stderr=stderr)
     os.close(stderr)
     client.send(INIT)
     client.send(call("flood", client.put("a", TABLE), how="fd2", bytes=FLOOD))
+    time.sleep(stall)
     assert client.shut() == 0
-    with os.fdopen(unread, "rb") as file:
-        log = file.read()
+    log = read_to_eof(unread, within=10, size=4096, pause=pause)
+    os.close(unread)
     dropped = sum(int(n) for n in DROPPED.findall(log))
     kept = DROPPED.sub(b"", log)
     written = b"import-time print\nimport-time write\n" + b"x" * FLOOD + b"last words\n"
@@ -276,18 +321,55 @@ def test_a_stalled_stderr_cannot_keep_the_drainer_alive(
 
 
 def test_the_drainer_never_holds_the_channel(connect: Callable[..., Client]) -> None:
+    client = connect(FIXTURE, start_new_session=True)
+    try:
+        client.send(INIT)
+        client.send(call("lingers", client.put("a", TABLE)))
+        client.process.kill()
+        client.process.wait()
+        assert client.process.stdout
+        start = time.monotonic()
+        assert client.process.stdout.read() == b""
+        assert time.monotonic() - start < 2  # not the 5 s the child lingers
+        assert client.process.stdin
+        with pytest.raises(BrokenPipeError):  # unbuffered: nothing left to flush
+            os.write(client.process.stdin.fileno(), b"\n")
+    finally:
+        with suppress(ProcessLookupError):  # the child, and the drainer it keeps
+            os.killpg(client.process.pid, signal.SIGKILL)
+
+
+def test_the_drainer_holds_no_fd_leaked_into_the_host(
+    connect: Callable[..., Client],
+) -> None:
+    # As a caller leaking its end of the channel would, or any pipe it awaits EOF on.
+    awaited, leaked = os.pipe()
+    client = connect(FIXTURE, start_new_session=True, pass_fds=[leaked])
+    os.close(leaked)
+    try:
+        client.send(INIT)
+        client.send(call("lingers", client.put("a", TABLE)))
+        client.process.kill()
+        client.process.wait()
+        assert read_to_eof(awaited, within=2) == b""  # not the 5 s the child lingers
+    finally:
+        os.close(awaited)
+        with suppress(ProcessLookupError):
+            os.killpg(client.process.pid, signal.SIGKILL)
+
+
+def test_the_host_never_parents_the_drainer(connect: Callable[..., Client]) -> None:
     client = connect(FIXTURE)
     client.send(INIT)
-    client.send(call("lingers", client.put("a", TABLE)))
-    client.process.kill()
-    client.process.wait()
-    assert client.process.stdout
-    start = time.monotonic()
-    assert client.process.stdout.read() == b""
-    assert time.monotonic() - start < 2  # not the 5 s the child lingers
-    assert client.process.stdin
-    with pytest.raises(BrokenPipeError):  # unbuffered, so teardown has nothing to flush
-        os.write(client.process.stdin.fileno(), b"\n")
+    assert client.send(call("childless", client.put("a", TABLE)))["type"] == "result"
+    assert client.shut() == 0
+
+
+def test_a_failed_drainer_says_so(connect: Callable[..., Client]) -> None:
+    client = connect(FIXTURE, env=os.environ | {"FIXTURE_BREAK_DRAINER": "1"})
+    expected = "skb-arrow: stderr drainer failed: RuntimeError('broken on purpose')\n"
+    # EOF when the drainer exits: the host holds the relay, not the caller's stderr.
+    assert expected in client.stderr()
 
 
 def test_sigint_to_the_process_group_leaves_the_last_words_relayed(
@@ -297,7 +379,7 @@ def test_sigint_to_the_process_group_leaves_the_last_words_relayed(
     client.send(INIT)
     os.killpg(client.process.pid, signal.SIGINT)
     client.process.wait(timeout=10)
-    assert "KeyboardInterrupt" in client.stderr()
+    assert client.stderr().endswith("\nKeyboardInterrupt\n")  # the host's traceback
 
 
 def test_stderr_into_the_channel_is_discarded(connect: Callable[..., Client]) -> None:
@@ -305,6 +387,15 @@ def test_stderr_into_the_channel_is_discarded(connect: Callable[..., Client]) ->
     assert client.send(INIT)["type"] == "ready"
     assert client.send(call("noisy", client.put("a", TABLE)))["type"] == "result"
     assert client.shut() == 0
+
+
+def test_sockets_without_an_inode_are_never_the_same_pipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # As macOS reports every TCP socket: device 0, inode 0.
+    tcp = os.stat_result((stat.S_IFSOCK | 0o777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+    monkeypatch.setattr(os, "fstat", lambda fd: tcp)
+    assert not host._same_pipe(1, 2)
 
 
 def test_stderr_into_a_socket_channel_is_discarded(tmp_path: Path) -> None:
@@ -327,7 +418,11 @@ def test_stderr_into_a_socket_channel_is_discarded(tmp_path: Path) -> None:
     assert [json.loads(line)["type"] for line in lines] == ["ready"]
 
 
-@pytest.mark.parametrize("how", ["fd2", "lines"], ids=["one long line", "short lines"])
+@pytest.mark.parametrize(
+    "how",
+    ["fd2", "lines", "halves"],
+    ids=["one long line", "short lines", "a line in two writes"],
+)
 def test_stderr_goes_out_in_whole_lines_within_pipe_buf(
     connect: Callable[..., Client], how: str
 ) -> None:
@@ -335,7 +430,11 @@ def test_stderr_goes_out_in_whole_lines_within_pipe_buf(
     ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
     messages: list[bytes] = []
     size = -(-3 * select.PIPE_BUF // 100) * 100  # 100-byte lines past PIPE_BUF
-    flood = b"x" * size if how == "fd2" else (b"y" * 99 + b"\n") * (size // 100)
+    flood = {
+        "fd2": b"x" * size,
+        "lines": (b"y" * 99 + b"\n") * (size // 100),
+        "halves": b"z" * (size - 1) + b"\n",  # one line, written in two
+    }[how]
     written = b"import-time print\nimport-time write\n" + flood + b"last words\n"
 
     def receive() -> None:
@@ -362,18 +461,47 @@ def test_stderr_goes_out_in_whole_lines_within_pipe_buf(
     assert all(whole)
 
 
+def test_a_long_line_goes_out_as_it_grows(connect: Callable[..., Client]) -> None:
+    ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    landed: list[float] = []  # when each piece of the line arrived
+
+    def receive() -> None:
+        ours.settimeout(10)
+        while not (message := ours.recv(1 << 16)).endswith(b"last words\n"):
+            if message.startswith(b"x"):
+                landed.append(time.monotonic())
+
+    reader = threading.Thread(target=receive)
+    reader.start()
+    client = connect(FIXTURE, stderr=theirs.fileno())
+    theirs.close()
+    client.send(INIT)
+    flood = call(
+        "flood", client.put("a", TABLE), how="trickle", bytes=3 * select.PIPE_BUF
+    )
+    client.send(flood)
+    answered = time.monotonic()
+    assert client.shut() == 0
+    reader.join()
+    ours.close()
+    # PIPE_BUF bytes in after 0.2 s of the 0.6 s the line takes to write.
+    assert landed and landed[0] < answered
+
+
 def test_stderr_sharing_a_file_with_the_channel_is_kept(tmp_path: Path) -> None:
     directory = tmp_path / "session"
     directory.mkdir()
     with open(tmp_path / "log", "w+b") as log:
-        subprocess.run(
+        process = subprocess.Popen(
             [*FIXTURE, "--segment-dir", str(directory)],
-            input=b'{"type": "init", "protocol_version": 1}\n',
+            stdin=subprocess.PIPE,
             stdout=log,
             stderr=subprocess.STDOUT,
-            timeout=30,
-            check=True,
+            start_new_session=True,
         )
+        process.communicate(b'{"type": "init", "protocol_version": 1}\n', timeout=30)
+        assert process.returncode == 0
+        assert emptied(process.pid, within=5)  # the drainer has written what it held
         log.seek(0)
         text = log.read()
     assert b'"type": "ready"' in text

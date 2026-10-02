@@ -7,23 +7,31 @@ The contract between skb-arrow and its callers. Implementation: `src/skb_arrow/p
 - Control: one JSON object per line. Requests on stdin, responses on stdout.
 - stdout carries protocol messages only. Before importing anything heavy, the host moves the
   channel to private fds that exec'd children don't inherit; fd 0 then reads `/dev/null`, and
-  fd 1 and `sys.stdout` write to stderr. Library prints, C-level writes to fd 1, `input()`,
-  and exec'd children cannot reach the channel. A bare `fork()` child does hold it: if one
-  outlives the host, the caller sees no EOF (M4 lifecycle).
+  fd 1 and `sys.stdout` go with fd 2 (below). Library prints, C-level writes to fd 1,
+  `input()`, and exec'd children cannot reach the channel. A bare `fork()` child does hold
+  it: if one outlives the host, the caller sees no EOF (M4 lifecycle).
 - stderr carries diagnostics only, and never blocks the host (DESIGN §3.13). At startup,
   before anything but the standard library loads, the host forks a drainer that relays fds 1
   and 2, its own, its libraries', and its children's, to stderr:
   - A caller may read stderr lazily or never. Unread, the drainer holds at most 1 MiB,
     dropping the oldest, and on resuming writes `skb-arrow: N bytes of stderr dropped`.
   - Writes go out whole lines at a time, up to `PIPE_BUF` bytes, so hosts sharing one stderr
-    pipe don't split each other's lines.
-  - stderr reaches EOF once the host and every child holding its fds 1 and 2 have exited:
-    the drainer then gives a stalled stderr at most 1 s more.
+    pipe don't split each other's lines. A longer line is cut; one without its newline waits
+    up to 50 ms for it, so a prompt still shows.
+  - stderr reaches EOF once the host and every child holding its fds 1 and 2 have exited, and
+    the drainer has written what it holds. Once they have exited, it gives up on a stderr that
+    takes no write for 1 s, so a caller may wait for the host, then read.
+  - fd 2 is a pipe, not the caller's terminal: output that checks for one (colour, progress
+    bars) turns off.
   - The drainer ignores SIGINT, SIGTERM, and SIGHUP, so a process-group signal leaves it to
-    relay the host's last words. Orphaned when the host exits, it is reaped by init: a
-    caller that runs as PID 1 must reap orphans (`docker run --init`, tini).
+    relay the host's last words. It is never the host's child, so host code reaping every
+    child doesn't wait on it; init reaps it: a caller that runs as PID 1 must reap orphans
+    (`docker run --init`, tini).
+  - A drainer that fails writes `skb-arrow: stderr drainer failed: …`; the host's writes to
+    fds 1 and 2 then fail.
   - If stderr is the channel's own pipe or socket (`2>&1`), it is discarded, not mixed into
-    responses.
+    responses: such a caller gets no diagnostics, not even a startup error. On macOS a TCP
+    socket has no inode, so `2>&1` onto one goes undetected and corrupts responses.
 - Bulk data never rides the control channel; messages name segments
   ([`transport.md`](transport.md)).
 - Stateless (DESIGN §3.3). No cancel message: the caller kills the process (DESIGN §3.8).

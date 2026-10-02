@@ -281,6 +281,14 @@ were answered in 0.01 s, kept plus dropped bytes equalled bytes written, the las
 survived, and with SIGINT ignored the host's `KeyboardInterrupt` traceback reached stderr in
 20 of 20 runs (0 of 20 without). Rules: [`protocol.md`](protocol.md#channel).
 
+**Revised in the M4 Phase 1 review.** Cutting at the last newline of what had arrived wrote a
+line that reached the relay in two pieces (`abc`, then `def\n`) as two writes, and under full
+CPU load the whole-lines test failed 7 of 30 runs; a partial line now waits up to 50 ms for its
+newline (0 of 30). A flat 1 s after EOF cut off a stderr read at 500 KiB/s, last words lost and
+no note; the drainer now gives up only after 1 s without a write. It is forked twice, so host
+code reaping every child never waits on it, and closes every fd it inherits but its own, so a
+channel copy leaked to the host can't hold the caller's EOF.
+
 ---
 
 ## 4. Versioning and compatibility

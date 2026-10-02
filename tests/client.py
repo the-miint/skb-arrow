@@ -34,7 +34,7 @@ class Client:
             stdout=subprocess.PIPE,
             **popen,
         )
-        self.errors = b""
+        self.errors = bytearray()
         self.drain = threading.Thread(target=self._drain, daemon=True)
         if self.process.stderr:
             self.drain.start()
@@ -45,7 +45,13 @@ class Client:
 
     def _drain(self) -> None:
         assert self.process.stderr
-        self.errors = self.process.stderr.read()
+        # Teed beside DIR as it comes: a trail for a test that fails.
+        log = self.directory.with_name(f"{self.directory.name}.stderr")
+        with log.open("wb") as file:
+            while chunk := os.read(self.process.stderr.fileno(), 1 << 16):
+                file.write(chunk)
+                file.flush()
+                self.errors += chunk
 
     def write(self, message: object) -> None:
         assert self.process.stdin
@@ -105,6 +111,7 @@ class Client:
 
     def stderr(self) -> str:
         """All the host wrote to stderr: waits for its EOF."""
+        assert self.process.stderr, "stderr is the test's, not a drained pipe"
         self.drain.join(30)
         assert not self.drain.is_alive(), "stderr never reached EOF"
         return self.errors.decode()

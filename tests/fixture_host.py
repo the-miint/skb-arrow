@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -52,6 +53,14 @@ def flood(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Ta
         import ctypes  # here: it holds a file open, which could take a closed fd 2
 
         ctypes.PyDLL(None).write(2, b"x" * size, size)
+    elif how == "trickle":  # one line, in 30 writes over 0.6 s
+        for i in range(30):
+            os.write(2, b"x" * (size * (i + 1) // 30 - size * i // 30))
+            time.sleep(0.02)
+    elif how == "halves":  # one line in two writes, a moment apart
+        os.write(2, b"z" * (size // 2))
+        time.sleep(0.01)
+        os.write(2, b"z" * (size - size // 2 - 1) + b"\n")
     elif how == "child":
         subprocess.run(["head", "-c", str(size), "/dev/zero"], stdout=2, check=True)
     print("last words")
@@ -63,13 +72,36 @@ def lingers(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.
     return tables["table"]
 
 
+def mutters(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    """A line without its newline; with `dies`, the host's last."""
+    os.write(2, b"no newline")
+    if params["dies"]:
+        os.kill(os.getpid(), signal.SIGKILL)
+    return tables["table"]
+
+
+def childless(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    """Fails if the host has a child, live or a zombie: code reaping all would wait."""
+    try:
+        os.waitpid(-1, os.WNOHANG)
+    except ChildProcessError:
+        return tables["table"]
+    raise RuntimeError("the host has a child")
+
+
 def dies(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
     print("about to die")
     DYING.set()
     return tables["table"]
 
 
+def broken(source: int) -> None:
+    raise RuntimeError("broken on purpose")
+
+
 def main() -> int:
+    if "FIXTURE_BREAK_DRAINER" in os.environ:
+        host._drain = broken
     channel = host.reserve()
     # As a capability's library might, on import.
     print("import-time print")
@@ -86,6 +118,10 @@ def main() -> int:
             1, table, {"how": registry.Param(str), "bytes": registry.Param(int)}, flood
         ),
         "lingers": registry.Capability(1, table, {}, lingers),
+        "childless": registry.Capability(1, table, {}, childless),
+        "mutters": registry.Capability(
+            1, table, {"dies": registry.Param(bool)}, mutters
+        ),
     }
     handle = protocol.handle
 
