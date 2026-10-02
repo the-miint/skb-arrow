@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -30,7 +31,7 @@ def emptied(group: int, within: float) -> bool:
     while time.monotonic() < deadline:
         try:
             os.killpg(group, 0)
-        except ProcessLookupError:
+        except ProcessLookupError, PermissionError:  # EPERM: macOS, only zombies
             return True
         time.sleep(0.05)
     return False
@@ -107,6 +108,24 @@ class Client:
         with open(path, "xb") as file, ipc.new_stream(file, data.schema) as writer:
             writer.write_table(data)
         return name
+
+    def call(
+        self,
+        capability: str,
+        tables: Mapping[str, pa.Table],
+        params: Mapping[str, object] | None = None,
+        parts: int = 1,
+    ) -> dict[str, Any]:
+        """`capability` on `tables`, each put in `parts` segments: its response."""
+        inputs = {}
+        for name, table in tables.items():
+            rows = -(-table.num_rows // parts)
+            inputs[name] = [
+                self.put(f"{name}-{i}", table.slice(i * rows, rows))
+                for i in range(parts)
+            ]
+        message = {"type": "call", "capability": capability, "params": params or {}}
+        return self.send(message | {"input": inputs})
 
     def fetch(self, names: list[str]) -> pa.Table:
         return transport.read(self.directory, names)

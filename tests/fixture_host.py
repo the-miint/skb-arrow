@@ -143,19 +143,17 @@ def threads(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.
 
 
 def probe(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
-    """The host's open fds, Arrow's allocated bytes, and numba's threading layer."""
+    """The host's open fds, Python threads, children (zombies too), Arrow's bytes."""
     import pyarrow as pa  # here: nothing heavy loads before host.reserve()
-    from numba.np.ufunc.parallel import threading_layer
 
-    try:
-        layer = threading_layer()  # type: ignore[no-untyped-call]
-    except ValueError:  # no parallel kernel has run
-        layer = None
+    fds = len(os.listdir("/dev/fd"))
+    ps = subprocess.run(["ps", "-A", "-o", "ppid="], capture_output=True, check=True)
     return pa.table(
         {
-            "fds": [len(os.listdir("/dev/fd"))],
+            "fds": [fds],
+            "threads": [threading.active_count()],
+            "children": [ps.stdout.split().count(b"%d" % os.getpid()) - 1],  # less ps
             "arrow_bytes": [pa.total_allocated_bytes()],
-            "layer": pa.array([layer], pa.string()),
         }
     )
 

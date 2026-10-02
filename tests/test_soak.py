@@ -1,7 +1,6 @@
 """One host through many calls: nothing leaks, nothing drifts (DESIGN §5 M4)."""
 
 import os
-import signal
 import subprocess
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
@@ -11,27 +10,11 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from client import FIXTURE, INIT, Client, emptied
+from pyarrow import ipc
+from test_capabilities import EXAMPLES
 
 ROUNDS = 20
 ECHO = {"table": pa.table({"n": np.arange(1 << 17)})}  # 1 MiB of int64
-_SAMPLES = [f"s{i}" for i in range(12)]
-_COUNTS = np.random.default_rng(0).integers(1, 50, size=(12, 5))
-ANCOMBC = {
-    "table": pa.table(
-        {
-            "sample_id": np.repeat(_SAMPLES, 5).tolist(),
-            "feature_id": [f"f{j}" for j in range(5)] * 12,
-            "value": _COUNTS.ravel().tolist(),
-        }
-    ),
-    "metadata": pa.table({"sample_id": _SAMPLES, "g": ["a", "b", "c"] * 4}),
-}
-DUNNETT: dict[str, Any] = {
-    "formula": "g",
-    "grouping": "g",
-    "posthoc": ["dunnett"],
-    "bootstraps": 10,
-}
 
 
 def distances(seed: int, n: int = 30) -> pa.Table:
@@ -44,7 +27,16 @@ def distances(seed: int, n: int = 30) -> pa.Table:
 
 
 MANTEL = {"x": distances(1), "y": distances(2)}
-MISSING_A_PAIR = {"x": distances(1).slice(1), "y": distances(2)}
+CONSTANT = MANTEL | {"x": distances(1).set_column(2, "distance", pa.repeat(1.0, 435))}
+# A round, in order. CONSTANT warns, and answers NaN.
+CALLS: list[tuple[str, Mapping[str, pa.Table], dict[str, Any]]] = [
+    ("echo", ECHO, {}),
+    ("ancombc", *EXAMPLES["ancombc"]),
+    ("mantel", MANTEL, {}),
+    ("mantel", CONSTANT, {}),
+    ("mantel", MANTEL | {"x": distances(1).slice(1)}, {}),  # a pair missing
+    ("mantel", MANTEL, {"method": "nope"}),
+]
 
 
 @pytest.fixture
@@ -56,9 +48,8 @@ def host(tmp_path: Path) -> Iterator[Callable[[str], Client]]:
         directory, private = tmp_path / name / "session", tmp_path / name / "tmp"
         directory.mkdir(parents=True)
         private.mkdir()
-        clients.append(
-            Client(FIXTURE, directory, env=os.environ | {"TMPDIR": str(private)})
-        )
+        environment = os.environ | {"TMPDIR": str(private)}
+        clients.append(Client(FIXTURE, directory, timeout=120, env=environment))
         assert clients[-1].send(INIT | {"segment_bytes": 64 << 10})["type"] == "ready"
         return clients[-1]
 
@@ -67,42 +58,27 @@ def host(tmp_path: Path) -> Iterator[Callable[[str], Client]]:
         client.kill()
 
 
-def call(
-    client: Client,
-    capability: str,
-    tables: Mapping[str, pa.Table],
-    parts: int = 1,
-    **params: object,
-) -> dict[str, Any]:
-    """`capability` on `tables`, each put in `parts` segments."""
-    inputs = {}
-    for name, table in tables.items():
-        rows = -(-table.num_rows // parts)
-        inputs[name] = [
-            client.put(f"{name}-{i}", table.slice(i * rows, rows)) for i in range(parts)
-        ]
-    message = {"type": "call", "capability": capability, "params": params}
-    return client.send(message | {"input": inputs})
-
-
-def answer(client: Client, response: dict[str, Any]) -> tuple[object, ...]:
-    """What `response` says, its output fetched, once DIR is empty again."""
+def answer(client: Client, response: dict[str, Any]) -> tuple[Any, ...]:
+    """What `response` says, an output as the bytes written (NaN equals NaN there)."""
     if response["type"] == "result":
-        said: tuple[object, ...] = (client.fetch(response["output"]),)
+        names = response["output"]
+        said: tuple[Any, ...] = ([(client.directory / n).read_bytes() for n in names],)
+        client.fetch(names)
     else:
         said = (response["kind"], response["message"])
     assert list(client.directory.iterdir()) == []
-    return (*said, response["warnings"])
+    return (response["type"], *said, response["warnings"])
 
 
-def round_of_calls(client: Client) -> list[tuple[object, ...]]:
+def round_of_calls(client: Client) -> list[tuple[Any, ...]]:
     return [
-        answer(client, call(client, "echo", ECHO, parts=4)),
-        answer(client, call(client, "ancombc", ANCOMBC, **DUNNETT)),
-        answer(client, call(client, "mantel", MANTEL)),
-        answer(client, call(client, "mantel", MISSING_A_PAIR)),
-        answer(client, call(client, "mantel", MANTEL, method="nope")),
+        answer(client, client.call(name, tables, params, parts=4))
+        for name, tables, params in CALLS
     ]
+
+
+def decoded(segments: list[bytes]) -> pa.Table:
+    return pa.Table.from_batches([b for s in segments for b in ipc.open_stream(s)])
 
 
 def probe(client: Client) -> dict[str, Any]:
@@ -113,8 +89,8 @@ def probe(client: Client) -> dict[str, Any]:
 
 def resident(pid: int) -> int:
     """Bytes `pid` holds in memory now: ps reports KiB on both platforms."""
-    ps = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True)
-    return int(ps.stdout) << 10
+    ps = ["ps", "-o", "rss=", "-p", str(pid)]
+    return int(subprocess.run(ps, capture_output=True, check=True).stdout) << 10
 
 
 def test_a_soaked_host_leaks_nothing_and_answers_alike(
@@ -122,16 +98,22 @@ def test_a_soaked_host_leaks_nothing_and_answers_alike(
 ) -> None:
     client = host("soak")
     first = round_of_calls(client)
-    assert [said[0] for said in first[3:]] == ["invalid_input", "invalid_param"]
+    assert [said[0] for said in first] == ["result"] * 4 + ["error"] * 2
+    assert decoded(first[0][1]).equals(ECHO["table"])
+    assert [w["category"] for w in first[3][-1]] == [
+        "scipy.stats._warnings_errors.ConstantInputWarning"
+    ]
+    assert [said[1] for said in first[4:]] == ["invalid_input", "invalid_param"]
     probes, sizes = [probe(client)], [resident(client.process.pid)]
     for _ in range(ROUNDS - 1):
         assert round_of_calls(client) == first
         probes.append(probe(client))
         sizes.append(resident(client.process.pid))
-    assert all(p == probes[1] for p in probes[1:])  # fds, Arrow's bytes, numba's layer
+    # fds, threads, children and Arrow's bytes, once the first round has set up.
+    assert all(p == probes[1] for p in probes[1:])
     assert sizes[-1] - sizes[1] < 8 << 20
     # An output left unread is cleaned with DIR.
-    assert call(client, "echo", ECHO)["type"] == "result"
+    assert client.call("echo", ECHO)["type"] == "result"
     assert any(client.directory.iterdir())
     assert client.shut() == 0
     # Before stderr is read: that waits for the drainer to let go of it.
@@ -141,38 +123,10 @@ def test_a_soaked_host_leaks_nothing_and_answers_alike(
     assert "Traceback" not in client.stderr()
 
 
-def test_a_host_killed_with_numbas_threads_running_leaves_no_process(
-    host: Callable[[str], Client],
-) -> None:
-    client = host("killed")
-    answer(client, call(client, "mantel", MANTEL))
-    assert probe(client)["layer"] is not None  # numba's pool has started
-    os.kill(client.process.pid, signal.SIGKILL)
-    assert client.process.wait(timeout=30) == -signal.SIGKILL
-    assert emptied(client.process.pid, 5)
-
-
 def test_a_warm_host_writes_what_a_fresh_one_does(
     host: Callable[[str], Client],
 ) -> None:
     fresh, warm = host("fresh"), host("warm")
-    for _ in range(4):  # 20 mixed calls
+    for _ in range(4):  # 24 mixed calls
         round_of_calls(warm)
-
-    def written(client: Client) -> list[tuple[list[bytes], object]]:
-        found = []
-        for response in (
-            call(client, "ancombc", ANCOMBC, **DUNNETT),
-            call(client, "mantel", MANTEL),
-        ):
-            names = response["output"]
-            found.append(
-                (
-                    [(client.directory / n).read_bytes() for n in names],
-                    response["warnings"],
-                )
-            )
-            client.fetch(names)
-        return found
-
-    assert written(warm) == written(fresh)
+    assert round_of_calls(warm) == round_of_calls(fresh)

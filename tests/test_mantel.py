@@ -253,20 +253,7 @@ def test_end_to_end_across_segments(tmp_path: Path) -> None:
     client = Client(SKB_ARROW, directory)
     try:
         assert client.send(INIT | {"segment_bytes": 1024})["type"] == "ready"
-        inputs = {}
-        for name, table in INPUTS.items():
-            rows = -(-table.num_rows // 3)
-            inputs[name] = [
-                client.put(f"{name}-{i}", table.slice(i * rows, rows)) for i in range(3)
-            ]
-        response = client.send(
-            {
-                "type": "call",
-                "capability": "mantel",
-                "params": CHANGED,
-                "input": inputs,
-            }
-        )
+        response = client.call("mantel", INPUTS, CHANGED, parts=3)
         assert response["type"] == "result", response
         assert client.fetch(response["output"]).equals(expected(**CHANGED))
         assert client.shut() == 0
