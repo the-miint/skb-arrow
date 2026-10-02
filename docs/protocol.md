@@ -10,7 +10,20 @@ The contract between skb-arrow and its callers. Implementation: `src/skb_arrow/p
   fd 1 and `sys.stdout` write to stderr. Library prints, C-level writes to fd 1, `input()`,
   and exec'd children cannot reach the channel. A bare `fork()` child does hold it: if one
   outlives the host, the caller sees no EOF (M4 lifecycle).
-- stderr carries diagnostics only. Discipline rules: M4.
+- stderr carries diagnostics only, and never blocks the host (DESIGN §3.13). At startup,
+  before anything but the standard library loads, the host forks a drainer that relays fds 1
+  and 2, its own, its libraries', and its children's, to stderr:
+  - A caller may read stderr lazily or never. Unread, the drainer holds at most 1 MiB,
+    dropping the oldest, and on resuming writes `skb-arrow: N bytes of stderr dropped`.
+  - Writes go out whole lines at a time, up to `PIPE_BUF` bytes, so hosts sharing one stderr
+    pipe don't split each other's lines.
+  - stderr reaches EOF once the host and every child holding its fds 1 and 2 have exited:
+    the drainer then gives a stalled stderr at most 1 s more.
+  - The drainer ignores SIGINT, SIGTERM, and SIGHUP, so a process-group signal leaves it to
+    relay the host's last words. Orphaned when the host exits, it is reaped by init: a
+    caller that runs as PID 1 must reap orphans (`docker run --init`, tini).
+  - If stderr is the channel's own pipe or socket (`2>&1`), it is discarded, not mixed into
+    responses.
 - Bulk data never rides the control channel; messages name segments
   ([`transport.md`](transport.md)).
 - Stateless (DESIGN §3.3). No cancel message: the caller kills the process (DESIGN §3.8).

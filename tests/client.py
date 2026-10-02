@@ -20,24 +20,32 @@ INIT = {"type": "init", "protocol_version": 1}
 
 
 class Client:
-    def __init__(self, command: list[str], directory: Path, **popen: Any) -> None:
+    def __init__(
+        self, command: list[str], directory: Path, timeout: float = 30, **popen: Any
+    ) -> None:
         self.directory = directory
-        self.log = directory.with_name(f"{directory.name}.stderr")
-        # stderr drains to a file: an undrained pipe can wedge the host.
-        with self.log.open("wb") as stderr:
-            # DIR relative to the host's cwd, as a caller may pass it.
-            self.process = subprocess.Popen(
-                [*command, "--segment-dir", directory.name],
-                cwd=directory.parent,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=stderr,
-                **popen,
-            )
+        # Read to EOF, as a caller should; a test passing `stderr` leaves it unread.
+        popen.setdefault("stderr", subprocess.PIPE)
+        # DIR relative to the host's cwd, as a caller may pass it.
+        self.process = subprocess.Popen(
+            [*command, "--segment-dir", directory.name],
+            cwd=directory.parent,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            **popen,
+        )
+        self.errors = b""
+        self.drain = threading.Thread(target=self._drain, daemon=True)
+        if self.process.stderr:
+            self.drain.start()
         # A wedged host fails its test instead of hanging it.
-        self.watchdog = threading.Timer(30, self.process.kill)
+        self.watchdog = threading.Timer(timeout, self.process.kill)
         self.watchdog.daemon = True
         self.watchdog.start()
+
+    def _drain(self) -> None:
+        assert self.process.stderr
+        self.errors = self.process.stderr.read()
 
     def write(self, message: object) -> None:
         assert self.process.stdin
@@ -46,7 +54,9 @@ class Client:
 
     def receive(self) -> dict[str, Any]:
         assert self.process.stdout
-        response = json.loads(self.process.stdout.readline())
+        line = self.process.stdout.readline()
+        assert line, "the host closed its responses"
+        response = json.loads(line)
         assert type(response) is dict
         return response
 
@@ -94,4 +104,7 @@ class Client:
             os.rmdir(self.directory)
 
     def stderr(self) -> str:
-        return self.log.read_text()
+        """All the host wrote to stderr: waits for its EOF."""
+        self.drain.join(30)
+        assert not self.drain.is_alive(), "stderr never reached EOF"
+        return self.errors.decode()

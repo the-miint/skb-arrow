@@ -38,6 +38,31 @@ def fail(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Tab
     raise failures[str(params["kind"])]
 
 
+def flood(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    """`bytes` bytes of stderr, written as `how` says, then the last words."""
+    size, how = int(str(params["bytes"])), params["how"]
+    if how == "print":
+        print("x" * (size - 1))
+    elif how in ("fd1", "fd2", "lines"):
+        data = b"x" * size if how != "lines" else (b"y" * 99 + b"\n") * (size // 100)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(1 if how == "fd1" else 2, view) :]
+    elif how == "gil":  # PyDLL holds the GIL through the call
+        import ctypes  # here: it holds a file open, which could take a closed fd 2
+
+        ctypes.PyDLL(None).write(2, b"x" * size, size)
+    elif how == "child":
+        subprocess.run(["head", "-c", str(size), "/dev/zero"], stdout=2, check=True)
+    print("last words")
+    return tables["table"]
+
+
+def lingers(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
+    subprocess.Popen(["sleep", "5"])  # holds fds 1 and 2, as an exec'd child may
+    return tables["table"]
+
+
 def dies(tables: Mapping[str, pa.Table], params: Mapping[str, object]) -> pa.Table:
     print("about to die")
     DYING.set()
@@ -57,6 +82,10 @@ def main() -> int:
         "noisy": registry.Capability(1, table, {}, noisy),
         "fail": registry.Capability(1, table, {"kind": registry.Param(str)}, fail),
         "dies": registry.Capability(1, table, {}, dies),
+        "flood": registry.Capability(
+            1, table, {"how": registry.Param(str), "bytes": registry.Param(int)}, flood
+        ),
+        "lingers": registry.Capability(1, table, {}, lingers),
     }
     handle = protocol.handle
 

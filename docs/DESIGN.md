@@ -262,6 +262,25 @@ answer. Contract: [`capabilities.md`](capabilities.md#input-tables).
 M3 asked for "no all-zero rows/columns"; the strictly positive contract implies it. A
 non-negative variant waits for its first consumer, `dirmult_ttest` (M6).
 
+### 3.13 stderr: relayed by a drainer process, never blocking the host
+
+gpl-boundary deadlocked on an undrained stderr pipe, and so did this host (reproduced in M4,
+Linux): a caller that never read its stderr pipe got no answer once the host wrote 4 MiB, by
+`print`, `os.write(1)`, a libc `write(2)` holding the GIL, or a child process. A drain needs
+somewhere to run that the writer can't stop:
+- A thread in the host can't be it: C code blocked on fd 2 while holding the GIL keeps that
+  thread from ever running.
+- Writing only when `poll` reports room wedged on an unread pty, which reported room it
+  didn't have, and races when hosts share one pipe: both see room, the second blocks.
+
+So the host forks a drainer at startup, before any import beyond the standard library: no
+thread exists yet, and GNU OpenMP kills a bare-`fork()` child once it has started. The drainer
+reads a relay that replaces the host's fds 1 and 2, holds at most 1 MiB, drops the oldest
+beyond, and writes with a blocking thread of its own. In the design review, all four floods
+were answered in 0.01 s, kept plus dropped bytes equalled bytes written, the last words
+survived, and with SIGINT ignored the host's `KeyboardInterrupt` traceback reached stderr in
+20 of 20 runs (0 of 20 without). Rules: [`protocol.md`](protocol.md#channel).
+
 ---
 
 ## 4. Versioning and compatibility
