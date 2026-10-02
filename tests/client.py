@@ -51,7 +51,8 @@ class Client:
         self.watchdog.start()
 
     def _stop(self) -> None:
-        with suppress(ProcessLookupError):  # the group is gone
+        # Gone, or on macOS holding only zombies (EPERM).
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(self.process.pid, signal.SIGKILL)
 
     def _drain(self) -> None:
