@@ -133,16 +133,20 @@ def test_no_permutations_give_a_nan_pvalue_not_null() -> None:
     assert np.isnan(pvalue[0].as_py())
 
 
-def test_a_constant_input_gives_nan_and_its_warning() -> None:
+@pytest.mark.parametrize(
+    ("method", "warned"), [("pearson", True), ("spearman", True), ("kendalltau", False)]
+)
+def test_a_constant_input_gives_nan_warned_but_by_kendalltau(
+    method: str, warned: bool
+) -> None:
     tables = {"x": long(np.ones_like(X)), "y": INPUTS["y"]}
     with collect_warnings() as recorded:
-        observed = run(tables)
+        observed = run(tables, method=method)
     assert np.isnan(observed["statistic"][0].as_py())
     assert np.isnan(observed["pvalue"][0].as_py())
     assert observed["statistic"].null_count == observed["pvalue"].null_count == 0
-    assert [w["category"] for w in recorded] == [
-        "scipy.stats._warnings_errors.ConstantInputWarning"
-    ]
+    constant = ["scipy.stats._warnings_errors.ConstantInputWarning"]
+    assert [w["category"] for w in recorded] == (constant if warned else [])
 
 
 def test_row_order_and_orientation_cannot_change_the_answer() -> None:
@@ -168,6 +172,8 @@ def test_integer_ids_sort_as_integers() -> None:
 
 
 def test_one_thread_gives_every_threads_answer() -> None:
+    # scikit-bio's kernel computes each permutation in one thread, so this holds today;
+    # it pins the documented promise across scikit-bio upgrades.
     threads = numba.get_num_threads()
     assert threads > 1, "needs more than one core to mean anything"
     every = run()
@@ -219,6 +225,16 @@ def test_inputs_over_different_ids_are_invalid_input_naming_them() -> None:
     ids = [*IDS[:-1], "t"]
     tables = {"x": INPUTS["x"], "y": long(Y, ids)}
     assert error(tables) == ("invalid_input", "y: 1 of 12 IDs are not in x, e.g. 't'")
+
+
+def test_x_then_y_then_their_ids_are_checked() -> None:
+    empty, negative = INPUTS["x"].slice(0, 0), long(-Y, [*IDS[1:], "t"])
+    assert error({"x": empty, "y": negative}) == ("invalid_input", "x: no rows")
+    assert error({"x": INPUTS["x"], "y": negative}) == (
+        "invalid_input",
+        "y: 66 of 66 distances are negative or not finite, e.g. ('s00', 's01'), "
+        "('s00', 's02'), ('s00', 's03'), ('s00', 's04'), ('s00', 's05')",
+    )
 
 
 def test_fewer_than_three_ids_is_scikit_bios_invalid_input() -> None:

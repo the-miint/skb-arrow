@@ -1,6 +1,7 @@
 import re
+import tracemalloc
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from decimal import Decimal
 
 import numpy as np
@@ -467,6 +468,16 @@ def condense(table: pa.Table) -> _tables.DistanceTable:
     return _tables.distance_matrix("x", table)
 
 
+@pytest.fixture
+def traced() -> Iterator[None]:
+    """numpy reports its allocations to tracemalloc, lazily mapped ones too."""
+    tracemalloc.start()
+    try:
+        yield
+    finally:
+        tracemalloc.stop()
+
+
 def test_a_distance_table_becomes_its_condensed_matrix_with_ids_sorted() -> None:
     loaded = condense(distances(PAIRS))
     assert loaded.ids.equals(pa.array(["a", "b", "c", "d"]))
@@ -575,7 +586,12 @@ def test_a_pair_appears_once_in_either_orientation(
         condense(distances([*PAIRS, repeat]))
 
 
-@pytest.mark.parametrize("pair", [("b", "d"), ("c", "d")])  # the last, too
+def test_a_pair_repeated_twice_counts_once() -> None:
+    with rejects("x: 1 of 6 pairs repeat, e.g. ('a', 'c')"):
+        condense(distances([*PAIRS, ("a", "c", 2), ("c", "a", 2)]))
+
+
+@pytest.mark.parametrize("pair", [("a", "b"), ("b", "d"), ("c", "d")])  # ends too
 def test_every_pair_appears(pair: tuple[str, str]) -> None:
     rows = [row for row in PAIRS if set(row[:2]) != set(pair)]
     with rejects(f"x: 1 of 6 pairs are missing, e.g. {pair}"):
@@ -589,7 +605,7 @@ def test_missing_pairs_are_shown_in_sorted_order() -> None:
         condense(distances(rows))
 
 
-def test_missing_pairs_are_found_without_the_matrix() -> None:
+def test_missing_pairs_are_found_without_the_matrix(traced: None) -> None:
     # 200,000 IDs: their 20 billion pairs would take 160 GB as float64.
     ids = pa.array(np.arange(200_000))
     table = pa.table(
@@ -598,6 +614,19 @@ def test_missing_pairs_are_found_without_the_matrix() -> None:
     shown = "(0, 2), (0, 3), (0, 4), (0, 5), (0, 6)"
     with rejects(f"x: 19999800000 of 19999900000 pairs are missing, e.g. {shown}"):
         condense(table)
+    assert tracemalloc.get_traced_memory()[1] < 64 << 20  # where allocation is lazy too
+
+
+def test_loading_takes_a_few_times_the_matrix(traced: None) -> None:
+    # Every pair of 3000 IDs, in one chunk, as a caller would send them.
+    a, b = np.triu_indices(3000, 1)
+    table = pa.table({"id_a": a, "id_b": b, "distance": np.linspace(0, 1, a.size)})
+    del a, b
+    tracemalloc.reset_peak()
+    before = tracemalloc.get_traced_memory()[0]  # the input: pyarrow wraps numpy's
+    condensed = condense(table).condensed
+    # 2.1× measured, the matrix included: holding any array past its use passes 3×.
+    assert tracemalloc.get_traced_memory()[1] - before <= 3 * condensed.nbytes
 
 
 @pytest.mark.parametrize("value", [-1.0, np.nan, np.inf])
@@ -618,6 +647,38 @@ def test_bad_distances_are_shown_in_sorted_order() -> None:
         condense(distances(rows))
 
 
+def without(pair: tuple[str, str], rows: Rows = PAIRS) -> Rows:
+    return [row for row in rows if set(row[:2]) != set(pair)]
+
+
+def test_the_first_rule_broken_is_reported() -> None:
+    # Each breaks two rules adjacent in the documented order: the earlier one shows.
+    negative: Rows = [(a, b, -1 if d == 1 else d) for a, b, d in without(("b", "d"))]
+    broken = [
+        pa.table({"distance": [1], "id_b": ["b"], "extra": [1], "id_a": [None]}),
+        distances([(None, "b", 1), (1, "c", 2)], pa.int64()),
+        distances([(1, "b", "1"), (1, "c", "2")], pa.int64(), distance=STRING),
+        distances([], distance=STRING),
+        distances([*PAIRS, ("b", "b", None)]),
+        distances([*PAIRS, ("a", "b", None)]),
+        distances([*without(("b", "d")), ("b", "a", 1)]),
+        distances(negative),
+    ]
+    messages = [
+        "columns must be id_a, id_b, distance; got 'distance', 'id_b', 'extra', 'id_a'",
+        "id_a is null in 1 of 2 rows",
+        "id_a and id_b must be the same kind; got int64 and string",
+        "distance must be integers or floating point, not string",
+        "1 of 7 rows pair an ID with itself, e.g. 'b'",
+        "distance is null in 1 of 7 rows, e.g. ('a', 'b')",
+        "1 of 5 pairs repeat, e.g. ('a', 'b')",
+        "1 of 6 pairs are missing, e.g. ('b', 'd')",
+    ]
+    for table, message in zip(broken, messages, strict=True):
+        with rejects(f"x: {message}"):
+            condense(table)
+
+
 def test_tables_with_the_same_ids_pass() -> None:
     _tables.same_ids("y", pa.array(["a", "b"]), "x", pa.array(["a", "b"]))
 
@@ -636,3 +697,17 @@ def test_tables_with_the_same_ids_pass() -> None:
 def test_tables_compared_hold_the_same_ids(ids: pa.Array, message: str) -> None:
     with rejects(message):
         _tables.same_ids("y", ids, "x", pa.array(["a", "b", "c"]))
+
+
+@pytest.mark.parametrize(
+    ("ids", "message"),
+    [
+        ("abcdefghijk", "y: 4 of 11 IDs are not in x, e.g. 'h', 'i', 'j', 'k'"),
+        ("abcdefghijkl", "y: 5 of 12 IDs are not in x, e.g. 'h', 'i', 'j', 'k', 'l'"),
+        ("abcdefghijklm", "y: 6 of 13 IDs are not in x, e.g. 'h', 'i', 'j', 'k', 'l'"),
+        ("a", "y: 6 of 7 x IDs are missing, e.g. 'b', 'c', 'd', 'e', 'f'"),
+    ],
+)
+def test_id_mismatches_are_counted_but_five_shown(ids: str, message: str) -> None:
+    with rejects(message):
+        _tables.same_ids("y", pa.array(list(ids)), "x", pa.array(list("abcdefg")))

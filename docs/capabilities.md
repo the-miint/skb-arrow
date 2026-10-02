@@ -22,7 +22,7 @@ scikit-bio code runs. A violation is `invalid_input`, counted and shown by examp
 `table: 3 of 40 cells are not positive and finite, e.g. ('s1', 'f2'), ('s1', 'f7'), ('s4', 'f2')`.
 At most 5 examples, in sorted order.
 
-**IDs** (`sample_id`, `feature_id`): integers or strings (dictionary-encoded, `large_string`,
+**IDs** (`sample_id`, `feature_id`, `id_a`, `id_b`): integers or strings (dictionary-encoded, `large_string`,
 and `string_view` included), normalized to `int64` or `string`. Never null.
 
 **Feature table**, long: columns exactly `sample_id`, `feature_id`, `value`, in any order.
@@ -50,8 +50,8 @@ most once, and covariate columns.
 
 **Distance table**, long: columns exactly `id_a`, `id_b`, `distance`, in any order.
 - `id_a` and `id_b` hold the same kind of ID.
-- `distance` is integers or floating point, never null, NaN, infinite, or negative. Values
-  become float64.
+- `distance` is integers or floating point, never null, NaN, infinite, or negative. Decimal
+  is rejected: cast it to DOUBLE. Values become float64, so an integer above 2**53 rounds.
 - Each unordered pair of distinct IDs appears exactly once, in either orientation: no row pairs
   an ID with itself, and none of the n(n−1)/2 pairs is missing or repeated (`(b, a)` repeats
   `(a, b)`). At least one row.
@@ -150,6 +150,9 @@ Inputs: `x`, `y`, distance tables over the same IDs ([input tables](#input-table
 - Checked in this order: `x`, `y`, then that they hold the same IDs. Fewer than 3 IDs is
   scikit-bio's `invalid_input`.
 - `kendalltau` permutes in Python, not numba: about 52 s at 1000 IDs and 999 permutations.
+- scikit-bio draws every permutation up front: (`permutations` + 1) × IDs × 8 bytes, 16 GB
+  for a million at 2000 IDs. Unbounded, as in scikit-bio and R; one too large to size at
+  all (`2**62`) reports `invalid_input`, not `invalid_param`.
 - numba's threads come from the environment (`NUMBA_NUM_THREADS`, default every core); the
   answer doesn't depend on their count. A host's first call compiles each kernel it uses,
   about 0.3 s each (DESIGN §3.8).
@@ -164,7 +167,8 @@ Output, one row:
 
 - `n` is the number of IDs.
 - `pvalue` is NaN for `permutations: 0`. A constant input makes `statistic` and `pvalue` NaN,
-  with scipy's `ConstantInputWarning`.
+  with scipy's `ConstantInputWarning` for `pearson` and `spearman`; `kendalltau` warns
+  nothing.
 
 ## Seeds
 Why: DESIGN §3.7.
@@ -222,7 +226,8 @@ params' names, types, defaults, and accepted values; its output schema. Every ch
 bumps the version, additions included, so a caller can require what it uses.
 
 `host_version` covers the implementation. The libraries that compute answers (scikit-bio,
-numpy, scipy, pandas, patsy, numba) are pinned exactly ([`pyproject.toml`](../pyproject.toml)), so an
-answer is reproducible per `host_version`: bit for bit on the same machine and BLAS thread
-count, to floating-point tolerance across them. Other dependencies resolve at install; whether
+numpy, scipy, pandas, patsy, numba, and llvmlite, which compiles numba's kernels) are pinned
+exactly ([`pyproject.toml`](../pyproject.toml)), so an answer is reproducible per
+`host_version`: bit for bit on the same machine and BLAS thread count, to floating-point
+tolerance across them. Other dependencies resolve at install; whether
 releases pin them is M5's.

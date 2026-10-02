@@ -5,7 +5,6 @@ import itertools
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -29,17 +28,9 @@ class FeatureTable:
 
 def feature_table(name: str, table: pa.Table, *, pseudocount: float) -> FeatureTable:
     """Input `name` as a strictly positive dense matrix, once it keeps the contract."""
-    if sorted(table.column_names) != sorted(_COLUMNS):
-        raise InvalidInput(
-            f"{name}: columns must be {', '.join(_COLUMNS)}; "
-            f"got {_names(table.column_names)}"
-        )
+    _columns(name, table, _COLUMNS)
     sample, feature = (_ids(name, table, column) for column in _COLUMNS[:2])
-    value = table["value"]
-    if not (pa.types.is_integer(value.type) or pa.types.is_floating(value.type)):
-        raise InvalidInput(
-            f"{name}: value must be integers or floating point, not {value.type}"
-        )
+    value = _numbers(name, table, "value")
     if table.num_rows == 0:
         raise InvalidInput(f"{name}: no rows")
     samples, features = _sorted_unique(sample), _sorted_unique(feature)
@@ -93,30 +84,22 @@ class DistanceTable:
 
 
 def distance_matrix(name: str, table: pa.Table) -> DistanceTable:
-    """Input `name` as a condensed distance matrix, once it keeps the contract."""
-    if sorted(table.column_names) != sorted(_DISTANCE_COLUMNS):
-        raise InvalidInput(
-            f"{name}: columns must be {', '.join(_DISTANCE_COLUMNS)}; "
-            f"got {_names(table.column_names)}"
-        )
+    """Input `name` as a condensed distance matrix, once it keeps the contract.
+
+    Arrays are freed as soon as they're used: memory peaks at a few times the matrix.
+    """
+    _columns(name, table, _DISTANCE_COLUMNS)
     a, b = (_ids(name, table, column) for column in _DISTANCE_COLUMNS[:2])
     if a.type != b.type:
         raise InvalidInput(
             f"{name}: id_a and id_b must be the same kind; got {a.type} and {b.type}"
         )
-    distance = table["distance"]
-    if not (pa.types.is_integer(distance.type) or pa.types.is_floating(distance.type)):
-        raise InvalidInput(
-            f"{name}: distance must be integers or floating point, not {distance.type}"
-        )
+    distance = _numbers(name, table, "distance")
     rows = table.num_rows
     if rows == 0:
         raise InvalidInput(f"{name}: no rows")
     ids = _sorted_unique(pa.chunked_array([*a.chunks, *b.chunks], a.type))
-    i, j = (
-        pc.index_in(column, value_set=ids).to_numpy().astype(np.int64)
-        for column in (a, b)
-    )
+    i, j = (pc.index_in(column, value_set=ids).to_numpy() for column in (a, b))
     if (selves := np.flatnonzero(i == j)).size:
         raise _offence(
             name,
@@ -125,7 +108,9 @@ def distance_matrix(name: str, table: pa.Table) -> DistanceTable:
         )
     n = len(ids)
     low, high = np.minimum(i, j), np.maximum(i, j)
-    codes = _start(n, low) + high - low - 1  # the pair's place in the condensed form
+    del i, j
+    codes = _codes(n, low, high)
+    del low, high
 
     def pairs(codes: Iterable[int]) -> Iterator[tuple[object, object]]:
         for code in codes:
@@ -137,18 +122,19 @@ def distance_matrix(name: str, table: pa.Table) -> DistanceTable:
         raise _offence(
             name, f"distance is null in {nulls} of {rows} rows", pairs(where)
         )
-    present, counts = np.unique(codes, return_counts=True)
-    if (repeats := present[counts > 1]).size:
-        raise _offence(
-            name, f"{repeats.size} of {present.size} pairs repeat", pairs(repeats)
-        )
+    ordered = np.sort(codes)
+    if (repeated := ordered[1:] == ordered[:-1]).any():
+        repeats = np.unique(ordered[1:][repeated])
+        unique = rows - int(repeated.sum())
+        raise _offence(name, f"{repeats.size} of {unique} pairs repeat", pairs(repeats))
     total = n * (n - 1) // 2
-    if missing := total - present.size:
+    if missing := total - rows:  # each row its own pair, so none is beyond `total`
         raise _offence(
             name,
             f"{missing} of {total} pairs are missing",
-            pairs(_gaps(present, total)),
+            pairs(_gaps(ordered, total)),
         )
+    del ordered, repeated
     values = distance.to_numpy()
     bad = ~(np.isfinite(values) & (values >= 0))
     if count := int(bad.sum()):
@@ -170,13 +156,13 @@ def same_ids(name: str, ids: pa.Array, other: str, expected: pa.Array) -> None:
         raise _offence(
             name,
             f"{len(extra)} of {len(ids)} IDs are not in {other}",
-            extra.to_pylist(),
+            extra[:_SHOWN].to_pylist(),
         )
     if len(missing := expected.filter(pc.invert(pc.is_in(expected, value_set=ids)))):
         raise _offence(
             name,
             f"{len(missing)} of {len(expected)} {other} IDs are missing",
-            missing.to_pylist(),
+            missing[:_SHOWN].to_pylist(),
         )
 
 
@@ -301,17 +287,51 @@ def _check_defined(
         )
 
 
-def _start(n: int, row: Any) -> Any:
-    """Where `row`'s pairs start in the condensed form of `n` IDs (works on arrays)."""
+def _columns(name: str, table: pa.Table, columns: list[str]) -> None:
+    if sorted(table.column_names) != sorted(columns):
+        raise InvalidInput(
+            f"{name}: columns must be {', '.join(columns)}; "
+            f"got {_names(table.column_names)}"
+        )
+
+
+def _numbers(name: str, table: pa.Table, column: str) -> pa.ChunkedArray:
+    values = table[column]
+    if not (pa.types.is_integer(values.type) or pa.types.is_floating(values.type)):
+        raise InvalidInput(
+            f"{name}: {column} must be integers or floating point, not {values.type}"
+        )
+    return values
+
+
+def _start(n: int, row: int) -> int:
+    """Where `row`'s pairs start in the condensed form of `n` IDs."""
     return row * (2 * n - row - 1) // 2
+
+
+def _codes(
+    n: int, low: npt.NDArray[np.int32], high: npt.NDArray[np.int32]
+) -> npt.NDArray[np.int64]:
+    """Each pair's place in the condensed form: `_start` of `low`, then `high`'s offset.
+
+    In place, so there is one array the size of the rows at a time.
+    """
+    codes = low.astype(np.int64)
+    np.subtract(2 * n - 1, codes, out=codes)
+    codes *= low
+    codes //= 2
+    codes += high
+    codes -= low
+    codes -= 1
+    return codes
 
 
 def _gaps(present: npt.NDArray[np.int64], total: int) -> Iterator[int]:
     """The codes below `total` that sorted, distinct `present` lacks, in order."""
-    before = np.concatenate(([-1], present))
-    for k in np.flatnonzero(np.diff(before) > 1):
-        yield from range(int(before[k]) + 1, int(before[k + 1]))
-    yield from range(int(before[-1]) + 1, total)
+    yield from range(int(present[0]))
+    for k in np.flatnonzero(np.diff(present) > 1):
+        yield from range(int(present[k]) + 1, int(present[k + 1]))
+    yield from range(int(present[-1]) + 1, total)
 
 
 def _true_cells(mask: npt.NDArray[np.bool_]) -> Iterator[int]:
