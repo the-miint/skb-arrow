@@ -229,7 +229,8 @@ bumps the version, additions included, so a caller can require what it uses.
 version, keyed `name/version`: the inputs; the params in declaration order, each with its
 type, default, and rule; the output schema of the capability's example call (`EXAMPLES` in
 `tests/test_capabilities.py`). A test fails when a capability differs from the record at its
-version, has none, or has a record above its version. Records are history: a bump adds one.
+version, or doesn't have exactly one record per version up to it, or a key repeats. Records are
+history: a bump adds one.
 - Any difference trips it, a reworded rule included.
 - It can't see input-table contracts or checks inside `run`; a `rule` stands in for its
   `valid`. An output type that follows an input's (`echo`'s columns, `feature_id`) is recorded
@@ -240,12 +241,13 @@ version, has none, or has a record above its version. Records are history: a bum
 for bit on the same machine and BLAS thread count, to floating-point tolerance across them.
 - The compute pins are the libraries that compute answers: scikit-bio, numpy, scipy, pandas,
   patsy, pyarrow, numba, and llvmlite, which compiles numba's kernels. The rest are what they
-  need, at the versions `uv.lock` resolves. A test walks the lock from the compute pins, fails
-  on a dependency left unpinned or a pin nothing needs, and prints the `dependencies` to paste.
-- To move one pin: edit it, `uv lock`, and paste what the test prints if it fails. To
-  upgrade: keep only the compute pins, edited; `uv lock --upgrade`; paste what the test
-  prints; `uv lock`.
-- A security fix in requests, urllib3, or certifi needs a release. They come with scikit-bio,
-  for reading URLs, which no capability does.
+  need, at the versions `uv.lock` resolves. A test walks the lock from the compute pins and
+  fails on a dependency left unpinned, conditional, or locked at two versions, or a pin
+  nothing needs; it prints the `dependencies` to paste.
+- To move one pin: edit it and `uv lock`; if the test fails, paste what it prints and
+  `uv lock` again. To upgrade: keep only the compute pins, edited; `uv lock --upgrade`;
+  paste what the test prints; `uv lock`.
+- A security fix in any pin needs a release. requests and what it brings (urllib3, certifi,
+  idna, charset-normalizer) come with scikit-bio, for reading URLs, which no capability does.
 - Exact versions are not exact files: an index or uv configuration on the installing machine
   can still change what installs.

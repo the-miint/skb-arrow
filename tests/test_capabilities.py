@@ -6,6 +6,7 @@ import pickle
 import random
 import tomllib
 import warnings
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +47,9 @@ def _distances(seed: int) -> pa.Table:
     )
 
 
-# One call per capability, through its stochastic paths where it has them.
+# One call per capability, through its stochastic paths where it has them. Their
+# outputs' schemas are recorded (interfaces.json): an output type that follows an
+# input's follows the type given here.
 EXAMPLES: dict[str, tuple[dict[str, pa.Table], dict[str, Any]]] = {
     "echo": ({"table": pa.table({"a": [1, 2]})}, {}),
     "ancombc": (
@@ -134,29 +137,53 @@ def interface(name: str) -> dict[str, Any]:
             )
             for key, param in capability.params.items()
         ],
-        "output": str(capability.run(tables, resolved).schema).splitlines(),
+        "output": capability.run(tables, resolved)
+        .schema.to_string(truncate_metadata=False)
+        .splitlines(),
     }
+
+
+def records() -> dict[str, Any]:
+    """interfaces.json, each key once: json.loads would keep a repeated key's last."""
+
+    def unique(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        counts = Counter(key for key, _ in pairs)
+        repeated = [key for key, count in counts.items() if count > 1]
+        assert not repeated, f"repeated: {repeated}"
+        return dict(pairs)
+
+    loaded: dict[str, Any] = json.loads(
+        INTERFACES.read_text(), object_pairs_hook=unique
+    )
+    return loaded
 
 
 @pytest.mark.parametrize("name", sorted(EXAMPLES))
 def test_each_interface_is_its_versions_record(name: str) -> None:
     key = f"{name}/{registry.CAPABILITIES[name].schema_version}"
-    records = json.loads(INTERFACES.read_text())
-    current = interface(name)
-    assert key in records, f"{key} has no record; a bump adds:\n{json.dumps(current)}"
-    assert records[key] == current, f"{name} changed: bump its version"
+    recorded, current = records(), interface(name)
+    paste = json.dumps({key: current}, indent=2, sort_keys=True)
+    assert key in recorded, f"{key} has no record; a bump adds:\n{paste}"
+    assert recorded[key] == current, f"{name} changed: bump its version"
 
 
-def test_no_record_is_above_its_capabilitys_version() -> None:
-    for key in json.loads(INTERFACES.read_text()):
+def test_records_are_one_per_version_of_each_capability() -> None:
+    versions: dict[str, set[int]] = {}
+    for key in records():
         name, version = key.rsplit("/", 1)
-        assert int(version) <= registry.CAPABILITIES[name].schema_version, key
+        versions.setdefault(name, set()).add(int(version))
+    assert versions == {
+        name: set(range(1, capability.schema_version + 1))
+        for name, capability in registry.CAPABILITIES.items()
+    }
 
 
 def test_every_runtime_dependency_is_pinned_to_its_locked_version() -> None:
     lock = tomllib.loads((ROOT / "uv.lock").read_text())
+    names = [p["name"] for p in lock["package"]]
     packages = {p["name"]: p for p in lock["package"]}
     closure: set[str] = set()
+    markers: set[str | None] = set()
     todo = list(COMPUTE)
     while todo:
         if (name := todo.pop()) in closure:
@@ -166,7 +193,12 @@ def test_every_runtime_dependency_is_pinned_to_its_locked_version() -> None:
             assert "extra" not in edge, (
                 f"{name} needs {edge['name']}'s extras: walk them"
             )
+            markers.add(edge.get("marker"))
             todo.append(edge["name"])
+    # The environments' own marker, on every edge: another is a conditional dependency.
+    assert len(markers) == 1, f"conditional dependencies: {markers}"
+    forked = sorted(n for n in closure if names.count(n) > 1)
+    assert not forked, f"locked at two versions, so pin one: {forked}"
     pins = sorted(f"{n}=={packages[n]['version']}" for n in closure)
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     block = "".join(f'    "{pin}",\n' for pin in pins)

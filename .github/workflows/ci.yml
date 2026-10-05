@@ -30,7 +30,7 @@ jobs:
       - run: .githooks/pre-commit
       - run: uv build
       # Wheels only, uncached: a wheel built from an sdist earlier would hide one missing.
-      - run: uv tool install --no-build --no-cache dist/*.whl
+      - run: uv tool install --no-build --no-cache --python 3.14 dist/*.whl
       - name: Installed wheel matches source
         run: |
           installed=$("$(uv tool dir --bin)/skb-arrow" --version)

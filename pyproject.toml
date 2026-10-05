@@ -48,7 +48,7 @@ skb-arrow = "skb_arrow.cli:main"
 dev = ["pytest==9.1.1", "ruff==0.16.8", "mypy==2.3.1"]
 
 [tool.uv]
-# Supported platforms only (DESIGN §3.9).
+# The supported platforms' systems (DESIGN §3.9).
 environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]
 
 [tool.ruff.lint]
