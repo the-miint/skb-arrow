@@ -1,0 +1,140 @@
+{
+  "ancombc/1": {
+    "inputs": [
+      "metadata",
+      "table"
+    ],
+    "output": [
+      "feature_id: string not null",
+      "test: string not null",
+      "term: string",
+      "lfc: double",
+      "se: double",
+      "w: double not null",
+      "pvalue: double not null",
+      "qvalue: double not null",
+      "signif: bool not null"
+    ],
+    "params": [
+      {
+        "item": null,
+        "kind": "str",
+        "name": "formula",
+        "rule": ""
+      },
+      {
+        "default": null,
+        "item": null,
+        "kind": "str",
+        "name": "grouping",
+        "rule": ""
+      },
+      {
+        "default": [],
+        "item": "str",
+        "kind": "list",
+        "name": "posthoc",
+        "rule": "distinct, each one of global, pairwise, dunnett"
+      },
+      {
+        "default": 0.0,
+        "item": null,
+        "kind": "float",
+        "name": "pseudocount",
+        "rule": "at least 0"
+      },
+      {
+        "default": 100,
+        "item": null,
+        "kind": "int",
+        "name": "max_iter",
+        "rule": "at least 1"
+      },
+      {
+        "default": 1e-05,
+        "item": null,
+        "kind": "float",
+        "name": "tol",
+        "rule": "positive"
+      },
+      {
+        "default": 0.05,
+        "item": null,
+        "kind": "float",
+        "name": "alpha",
+        "rule": "in (0, 1)"
+      },
+      {
+        "default": "holm",
+        "item": null,
+        "kind": "str",
+        "name": "p_adjust",
+        "rule": "one of holm, bonferroni, bh, by"
+      },
+      {
+        "default": 100,
+        "item": null,
+        "kind": "int",
+        "name": "bootstraps",
+        "rule": "at least 1"
+      },
+      {
+        "default": 0,
+        "item": null,
+        "kind": "int",
+        "name": "seed",
+        "rule": "at least 0"
+      }
+    ]
+  },
+  "echo/1": {
+    "inputs": [
+      "table"
+    ],
+    "output": [
+      "a: int64"
+    ],
+    "params": []
+  },
+  "mantel/1": {
+    "inputs": [
+      "x",
+      "y"
+    ],
+    "output": [
+      "statistic: double not null",
+      "pvalue: double not null",
+      "n: int64 not null"
+    ],
+    "params": [
+      {
+        "default": "pearson",
+        "item": null,
+        "kind": "str",
+        "name": "method",
+        "rule": "one of pearson, spearman, kendalltau"
+      },
+      {
+        "default": 999,
+        "item": null,
+        "kind": "int",
+        "name": "permutations",
+        "rule": "at least 0"
+      },
+      {
+        "default": "two-sided",
+        "item": null,
+        "kind": "str",
+        "name": "alternative",
+        "rule": "one of two-sided, greater, less"
+      },
+      {
+        "default": 0,
+        "item": null,
+        "kind": "int",
+        "name": "seed",
+        "rule": "at least 0"
+      }
+    ]
+  }
+}

@@ -1,9 +1,12 @@
 """Contracts every registered capability keeps (docs/capabilities.md#contract)."""
 
+import json
 import os
 import pickle
 import random
+import tomllib
 import warnings
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -14,6 +17,19 @@ import skbio
 
 from skb_arrow import registry
 
+ROOT = Path(__file__).parents[1]
+INTERFACES = ROOT / "tests" / "data" / "interfaces.json"
+# The libraries that compute answers (docs/capabilities.md#versioning).
+COMPUTE = (
+    "llvmlite",
+    "numba",
+    "numpy",
+    "pandas",
+    "patsy",
+    "pyarrow",
+    "scikit-bio",
+    "scipy",
+)
 _SAMPLES = [f"s{i}" for i in range(12)]
 _COUNTS = np.random.default_rng(0).integers(1, 50, size=(12, 5))
 _PAIRS = [(a, b) for a in range(5) for b in range(a + 1, 5)]
@@ -95,3 +111,63 @@ def test_capabilities_leave_process_state_as_found(name: str) -> None:
     before = state()
     capability.run(tables, resolved)
     assert state() == before
+
+
+def interface(name: str) -> dict[str, Any]:
+    """What `name` takes and gives, as interfaces.json records it."""
+    capability = registry.CAPABILITIES[name]
+    tables, params = EXAMPLES[name]
+    _, resolved = registry.validate(name, tables.keys(), params)
+    return {
+        "inputs": sorted(capability.inputs),
+        "params": [
+            {
+                "name": key,
+                "kind": param.kind.__name__,
+                "item": None if param.item is None else param.item.__name__,
+                "rule": param.rule,
+            }
+            | (
+                {}
+                if param.default is registry._REQUIRED
+                else {"default": param.default}
+            )
+            for key, param in capability.params.items()
+        ],
+        "output": str(capability.run(tables, resolved).schema).splitlines(),
+    }
+
+
+@pytest.mark.parametrize("name", sorted(EXAMPLES))
+def test_each_interface_is_its_versions_record(name: str) -> None:
+    key = f"{name}/{registry.CAPABILITIES[name].schema_version}"
+    records = json.loads(INTERFACES.read_text())
+    current = interface(name)
+    assert key in records, f"{key} has no record; a bump adds:\n{json.dumps(current)}"
+    assert records[key] == current, f"{name} changed: bump its version"
+
+
+def test_no_record_is_above_its_capabilitys_version() -> None:
+    for key in json.loads(INTERFACES.read_text()):
+        name, version = key.rsplit("/", 1)
+        assert int(version) <= registry.CAPABILITIES[name].schema_version, key
+
+
+def test_every_runtime_dependency_is_pinned_to_its_locked_version() -> None:
+    lock = tomllib.loads((ROOT / "uv.lock").read_text())
+    packages = {p["name"]: p for p in lock["package"]}
+    closure: set[str] = set()
+    todo = list(COMPUTE)
+    while todo:
+        if (name := todo.pop()) in closure:
+            continue
+        closure.add(name)
+        for edge in packages[name].get("dependencies", []):
+            assert "extra" not in edge, (
+                f"{name} needs {edge['name']}'s extras: walk them"
+            )
+            todo.append(edge["name"])
+    pins = sorted(f"{n}=={packages[n]['version']}" for n in closure)
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    block = "".join(f'    "{pin}",\n' for pin in pins)
+    assert sorted(project["dependencies"]) == pins, f"dependencies = [\n{block}]"

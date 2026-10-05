@@ -1,7 +1,7 @@
 # skb-arrow — Design
 
 **Status:** M1 (foundation), M2 (protocol and transport), M3 (first capability: `ancombc`), and
-M4 (robustness and lifecycle) complete; M5 next.
+M4 (robustness and lifecycle) complete; M5 (release) in progress.
 **Scope of this document:** skb-arrow only. The duckdb-miint integration (C++ submit
 framework, `install_skb_arrow()`, SQL wrappers) is deliberately out of scope and gets its
 own plan in that repository. **The protocol specification in this repo is the contract
@@ -232,6 +232,16 @@ multiply-adds in the cython kernel, so the answer could depend on the engine. In
 review, numba's results were identical across square and condensed layouts and 1 and 32
 threads (2000 IDs). CI runs it end to end on both platforms.
 
+**Revised in M5:** biom-format 2.1.18 ships cp314 wheels for both platforms and is pinned, so
+nothing builds from source again. CI installs the built wheel with `--no-build` and no cache,
+so a dependency without a wheel fails it. `requires-python` is `==3.14.*`, and the lock covers
+3.14 on Linux and macOS only (`[tool.uv] environments`). pip enforces the bound; uv does not:
+it reads only a dependency's lower bound, by design, and measured with uv 0.10, a `==3.13.*`
+wheel installs on 3.14. On 3.15 an install goes on to pyarrow, scikit-bio, h5py, and
+biom-format, which have no cp315 wheels (2026-10), and must build them from source.
+`uv tool install` also picks an interpreter without reading `requires-python` (uv#14110), so
+installs name `--python 3.14`.
+
 ### 3.10 Result shapes: unify a family into one long table
 
 One table with a discriminator column, rather than multiple outputs, where scikit-bio returns
@@ -389,6 +399,14 @@ an older host with the same version gets `invalid_param`. The implementation is
 `host_version`'s, with the libraries that compute answers pinned exactly. Rules:
 [`capabilities.md`](capabilities.md#versioning).
 
+**Revised in M5:** every runtime dependency is pinned exactly, not only those libraries.
+Importing the registry loads 15 distributions, and 7 were unpinned (biom-format, h5py,
+array-api-compat, and python-dateutil among them), each able to change what runs under one
+`host_version`. The host installs as a uv tool, in an environment of its own, so exact pins
+conflict with nothing; the cost is that a security fix anywhere in the closure needs a
+release. Both halves are tested: the pins against `uv.lock`'s closure of the compute pins,
+each `schema_version` against a recorded interface.
+
 ---
 
 ## 5. Milestones
@@ -457,7 +475,8 @@ fresh host and one 24 calls warm write the same bytes and warnings. Threads die 
 process, so numba's need no kill test: only the drainer can outlive a killed host.
 
 ### M5 — Release
-- PyPI publish via trusted publishing; version/compat policy (§4) enforced in code and tested
+- PyPI publish via trusted publishing; version/compat policy (§4) enforced in code and tested:
+  every runtime dependency pinned, each `schema_version` checked against a recorded interface
 - `skb-arrow doctor` reporting interpreter, versions, extras, and transport placement
 - Installation and capability documentation
 
