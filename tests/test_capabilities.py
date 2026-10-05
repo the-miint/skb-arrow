@@ -16,21 +16,12 @@ import pyarrow as pa
 import pytest
 import skbio
 
-from skb_arrow import registry
+from skb_arrow import doctor, registry
 
 ROOT = Path(__file__).parents[1]
 INTERFACES = ROOT / "tests" / "data" / "interfaces.json"
-# The libraries that compute answers (docs/capabilities.md#versioning).
-COMPUTE = (
-    "llvmlite",
-    "numba",
-    "numpy",
-    "pandas",
-    "patsy",
-    "pyarrow",
-    "scikit-bio",
-    "scipy",
-)
+# The compute pins, and what the host imports itself: --doctor parses requirements.
+ROOTS = (*doctor.COMPUTE, "packaging")
 _SAMPLES = [f"s{i}" for i in range(12)]
 _COUNTS = np.random.default_rng(0).integers(1, 50, size=(12, 5))
 _PAIRS = [(a, b) for a in range(5) for b in range(a + 1, 5)]
@@ -184,7 +175,7 @@ def test_every_runtime_dependency_is_pinned_to_its_locked_version() -> None:
     packages = {p["name"]: p for p in lock["package"]}
     closure: set[str] = set()
     markers: set[str | None] = set()
-    todo = list(COMPUTE)
+    todo = list(ROOTS)
     while todo:
         if (name := todo.pop()) in closure:
             continue

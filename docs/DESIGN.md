@@ -477,7 +477,8 @@ process, so numba's need no kill test: only the drainer can outlive a killed hos
 ### M5 — Release
 - PyPI publish via trusted publishing; version/compat policy (§4) enforced in code and tested:
   every runtime dependency pinned, each `schema_version` checked against a recorded interface
-- `skb-arrow doctor` reporting interpreter, versions, extras, and transport placement
+- `skb-arrow --doctor` reporting interpreter, platform, versions, threads, and segment
+  placement (no extras: numba is always installed, §3.9)
 - Installation and capability documentation
 
 **Done when:** `uv tool install skb-arrow` from PyPI works on both platforms from a clean machine.

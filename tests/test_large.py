@@ -18,7 +18,7 @@ from skb_arrow import protocol, transport
 pytestmark = pytest.mark.large
 
 KiB, MiB, GiB = 1 << 10, 1 << 20, 1 << 30
-CAP = protocol._DEFAULT_SEGMENT_BYTES
+CAP = protocol.DEFAULT_SEGMENT_BYTES
 SCHEMA = pa.schema({"n": pa.int64()})
 
 

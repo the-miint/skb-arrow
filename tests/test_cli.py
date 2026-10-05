@@ -62,10 +62,18 @@ def test_importing_the_cli_and_host_loads_nothing_heavy() -> None:
     assert result.stdout == "['skb_arrow', 'skb_arrow.cli', 'skb_arrow.host']\n"
 
 
-def test_version_and_segment_dir_are_exclusive() -> None:
+@pytest.mark.parametrize(
+    "modes",
+    [
+        ["--version", "--segment-dir", "x"],
+        ["--doctor", "--version"],
+        ["--doctor", "--segment-dir", "x"],
+    ],
+)
+def test_modes_are_exclusive(modes: list[str]) -> None:
     # In a subprocess: serving in-process would reserve pytest's own fds.
     result = subprocess.run(
-        [*SKB_ARROW, "--version", "--segment-dir", "x"],
+        [*SKB_ARROW, *modes],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,

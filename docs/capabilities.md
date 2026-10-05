@@ -242,12 +242,13 @@ for bit on the same machine and BLAS thread count, to floating-point tolerance a
 - The compute pins are the libraries that compute answers: scikit-bio, numpy, scipy, pandas,
   patsy, pyarrow, numba, and llvmlite, which compiles numba's kernels. The rest are what they
   need, at the versions `uv.lock` resolves. A test walks the lock from the compute pins and
-  fails on a dependency left unpinned, conditional, or locked at two versions, or a pin
-  nothing needs; it prints the `dependencies` to paste.
+  packaging, which `--doctor` imports. It fails on a dependency left unpinned, conditional,
+  or locked at two versions, or a pin nothing needs, and prints the `dependencies` to paste.
 - To move one pin: edit it and `uv lock`; if the test fails, paste what it prints and
   `uv lock` again. To upgrade: keep only the compute pins, edited; `uv lock --upgrade`;
   paste what the test prints; `uv lock`.
 - A security fix in any pin needs a release. requests and what it brings (urllib3, certifi,
   idna, charset-normalizer) come with scikit-bio, for reading URLs, which no capability does.
 - Exact versions are not exact files: an index or uv configuration on the installing machine
-  can still change what installs.
+  can still change what installs. `skb-arrow --doctor` reports a version its pin excludes; a
+  different file of the same version it can't see.

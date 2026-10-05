@@ -23,7 +23,8 @@ touches transport or JSON; it raises skb_arrow error classes for faults it antic
 
 | Module | Holds |
 |---|---|
-| `cli.py` | entry point: `--version`, `--segment-dir DIR` |
+| `cli.py` | entry point: [modes](#cli) |
+| `doctor.py` | `versions`: `--version`'s lines; `report`: `--doctor` |
 | `host.py` | `reserve`: the channel, the stderr drainer, and the fork hook, before heavy imports; `serve`: DIR checks, the response watch, loop, cleanup |
 | `errors.py` | error classes (raised in every layer), `classify`, `collect_warnings` |
 | `protocol.py` | `PROTOCOL_VERSION`, `Session`, `handle`: one request line → one response line |
@@ -35,3 +36,20 @@ touches transport or JSON; it raises skb_arrow error classes for faults it antic
 | `capabilities/mantel.py` | the Mantel test between two distance tables |
 
 A module becomes a package when it outgrows one file; imports don't change.
+
+## CLI
+One mode per invocation:
+- `--segment-dir DIR` serves ([`protocol.md`](protocol.md)).
+- `--version` prints the package version, `protocol_version`, and each capability with its
+  `schema_version`.
+- `--doctor` prints `--version`'s lines; a `key: value` line each for `python`, `platform`,
+  `dependencies`, `numpy`, `numba`, `threads`, and `segments`; then a `problem:` line per
+  fault. It exits 1 if there is one, else 0. Faults:
+  - Python other than 3.14; a platform other than Linux x86_64 or macOS arm64.
+  - A dependency missing, or installed at a version its pin excludes.
+  - [Placement](transport.md): `/dev/shm` on Linux, `$TMPDIR` on macOS (unset is a fault).
+    A DIR can't be created there, or it has less free space than one default segment.
+  - Anything a check raises, such as the registry failing to import: a `problem:` line,
+    never a traceback.
+
+  It compiles nothing: numba's thread count and layer are as configured.

@@ -1,6 +1,5 @@
 import argparse
 import sys
-from importlib.metadata import version
 from pathlib import Path
 
 
@@ -11,6 +10,9 @@ def main(argv: list[str] | None = None) -> int:
         "--version", action="store_true", help="print version, protocol, capabilities"
     )
     mode.add_argument(
+        "--doctor", action="store_true", help="report on this install; 1 if unsound"
+    )
+    mode.add_argument(
         "--segment-dir", type=Path, metavar="DIR", help="serve, with segments in DIR"
     )
     args = parser.parse_args(argv)
@@ -18,15 +20,13 @@ def main(argv: list[str] | None = None) -> int:
         from skb_arrow import host
 
         return host.serve(args.segment_dir, *host.reserve())
-    if not args.version:
+    if not (args.version or args.doctor):
         parser.print_usage(sys.stderr)
         return 2
     # Here, not at module level: nothing heavy may load before host.reserve().
-    from skb_arrow import registry
-    from skb_arrow.protocol import PROTOCOL_VERSION
+    from skb_arrow import doctor
 
-    caps = ", ".join(f"{n}/{v}" for n, v in registry.schema_versions().items())
-    print(f"skb-arrow {version('skb-arrow')}")
-    print(f"protocol {PROTOCOL_VERSION}")
-    print(f"capabilities: {caps}")
+    if args.doctor:
+        return doctor.report()
+    print("\n".join(doctor.versions()))
     return 0

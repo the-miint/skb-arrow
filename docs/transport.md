@@ -17,7 +17,8 @@ Why memory-mapped files, not POSIX shm: DESIGN §3.2. Why chunked: §3.4. Implem
 
 **Placement:** tmpfs (`/dev/shm`) on Linux, under `$TMPDIR` on macOS. Default Docker containers
 mount a 64 MiB `/dev/shm`; raise `--shm-size` or place DIR elsewhere. No fallback: a full
-filesystem fails the call with `resource`.
+filesystem fails the call with `resource`. `skb-arrow --doctor` checks the placement
+([`architecture.md`](architecture.md#cli)).
 
 ## Segments
 - A table is a non-empty list of segments (else `host_incompatible`), each one uncompressed

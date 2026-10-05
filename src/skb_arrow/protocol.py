@@ -13,7 +13,7 @@ from skb_arrow import registry, transport
 from skb_arrow.errors import HostIncompatible, classify, collect_warnings
 
 PROTOCOL_VERSION = 1
-_DEFAULT_SEGMENT_BYTES = 256 << 20
+DEFAULT_SEGMENT_BYTES = 256 << 20
 _MIN_SEGMENT_BYTES = 1024
 _ID_TYPES = (str, int)
 _REQUIRED = object()
@@ -29,7 +29,7 @@ def _held() -> threading.Lock:
 class Session:
     directory: Path
     ready: bool = False  # an init succeeded
-    segment_bytes: int = _DEFAULT_SEGMENT_BYTES
+    segment_bytes: int = DEFAULT_SEGMENT_BYTES
     outputs: Iterator[int] = field(default_factory=itertools.count)
     # Held but while a capability runs: taking it then stops the session writing.
     lock: threading.Lock = field(default_factory=_held)
@@ -88,9 +88,7 @@ def _init(session: Session, request: dict[str, Any]) -> dict[str, Any]:
         raise HostIncompatible(
             f"protocol_version {requested}; this host speaks {PROTOCOL_VERSION}"
         )
-    segment_bytes = _field(
-        request, "segment_bytes", int, default=_DEFAULT_SEGMENT_BYTES
-    )
+    segment_bytes = _field(request, "segment_bytes", int, default=DEFAULT_SEGMENT_BYTES)
     if segment_bytes < _MIN_SEGMENT_BYTES:
         raise HostIncompatible(f"segment_bytes must be at least {_MIN_SEGMENT_BYTES}")
     session.ready, session.segment_bytes = True, segment_bytes
