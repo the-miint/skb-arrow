@@ -7,7 +7,7 @@ import sys
 import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from functools import partial
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, requires, version
 from pathlib import Path
 from typing import Any
 
@@ -33,17 +33,19 @@ _INSTALL = "uv tool install --python 3.14 skb-arrow"
 _PROBLEM = "problem: "
 
 
-def versions() -> list[str]:
+def versions() -> Iterator[str]:
     """The package version, the protocol version, and the capabilities: a line each."""
+    yield f"skb-arrow {version('skb-arrow')}"  # first: it needs no registry
     from skb_arrow import registry
     from skb_arrow.protocol import PROTOCOL_VERSION
 
+    yield f"protocol {PROTOCOL_VERSION}"
     caps = ", ".join(f"{n}/{v}" for n, v in registry.schema_versions().items())
-    return [
-        f"skb-arrow {version('skb-arrow')}",
-        f"protocol {PROTOCOL_VERSION}",
-        f"capabilities: {caps}",
-    ]
+    yield f"capabilities: {caps}"
+
+
+def _free(place: Path) -> int:
+    return shutil.disk_usage(place).free
 
 
 def report(
@@ -52,24 +54,23 @@ def report(
     system: str = sys.platform,
     machine: str = platform.machine(),
     environ: Mapping[str, str] = os.environ,
-    requires: list[str] | None = None,
+    pins: list[str] | None = None,
     shm: Path = Path("/dev/shm"),
-    need: int | None = None,
+    free: Callable[[Path], int] = _free,
 ) -> int:
     """Print the facts, then a `problem:` line per fault: 1 if there is one, else 0.
 
-    Defaults are this process's; `requires` is the installed skb-arrow's, `need` one
-    default segment.
+    Defaults are this process's; `pins` are the installed skb-arrow's requirements.
     """
     checks: list[tuple[str, Callable[[], Iterable[str]]]] = [
         ("version", versions),
         ("python", partial(_python, version_info)),
         ("platform", partial(_platform, system, machine)),
-        ("dependencies", partial(_dependencies, requires)),
+        ("dependencies", partial(_dependencies, pins)),
         ("numpy", _numpy),
         ("numba", _numba),
         ("threads", partial(_threads, environ)),
-        ("segments", partial(_segments, system, environ, shm, need)),
+        ("segments", partial(_segments, system, environ, shm, free)),
     ]
     facts: list[str] = []
     problems: list[str] = []
@@ -78,7 +79,8 @@ def report(
             for line in check():
                 (problems if line.startswith(_PROBLEM) else facts).append(line)
         except Exception as e:  # a broken install still gets its report
-            problems.append(f"{_PROBLEM}{name}: {type(e).__name__}: {e}")
+            said = " ".join(str(e).split())  # one line, as every problem is
+            problems.append(f"{_PROBLEM}{name}: {type(e).__name__}: {said}")
     print("\n".join(facts + problems))
     return 1 if problems else 0
 
@@ -99,18 +101,15 @@ def _platform(system: str, machine: str) -> Iterator[str]:
         )
 
 
-def _dependencies(requires: list[str] | None) -> Iterator[str]:
-    from importlib.metadata import PackageNotFoundError
-    from importlib.metadata import requires as required
-
+def _dependencies(pins: list[str] | None) -> Iterator[str]:
     from packaging.requirements import Requirement
 
-    if requires is None:
-        requires = required("skb-arrow") or []
+    if pins is None:
+        pins = requires("skb-arrow") or []
     shown: list[str] = []
     rest = 0
     problems: list[str] = []
-    for requirement in map(Requirement, requires):
+    for requirement in map(Requirement, pins):
         name, required_by = requirement.name, f"but skb-arrow requires {requirement}"
         try:
             installed = version(name)
@@ -123,7 +122,7 @@ def _dependencies(requires: list[str] | None) -> Iterator[str]:
             shown.append(f"{name}=={installed}")
         else:
             rest += 1
-    yield f"dependencies: {', '.join(shown)}; {rest} more"
+    yield f"dependencies: {', '.join(sorted(shown))}; {rest} more"
     for problem in problems:
         yield f"{_PROBLEM}dependencies: {problem}"
 
@@ -152,15 +151,16 @@ def _threads(environ: Mapping[str, str]) -> Iterator[str]:
 
 
 def _segments(
-    system: str, environ: Mapping[str, str], shm: Path, need: int | None
+    system: str, environ: Mapping[str, str], shm: Path, free: Callable[[Path], int]
 ) -> Iterator[str]:
     """Where a caller puts DIR (docs/transport.md): it must hold one default segment."""
-    if need is None:
-        from skb_arrow.protocol import DEFAULT_SEGMENT_BYTES
+    from skb_arrow.transport import DEFAULT_SEGMENT_BYTES  # pyarrow, not the registry
 
-        need = DEFAULT_SEGMENT_BYTES
     if system == "linux":
         place = shm
+    elif system != "darwin":
+        yield f"segments: no placement on {system}"  # the platform's problem says why
+        return
     elif environ.get("TMPDIR"):
         place = Path(environ["TMPDIR"])
     else:
@@ -175,17 +175,17 @@ def _segments(
         yield f"segments: {place}"
         yield f"{_PROBLEM}segments: no DIR can be created in {place}: {e.strerror}"
         return
-    free = shutil.disk_usage(place).free
-    yield f"segments: {place}, {free >> 20} MiB free"
-    if free < need:
+    room = free(place)
+    yield f"segments: {place}, {room >> 20} MiB free"
+    if room < DEFAULT_SEGMENT_BYTES:
         advice = (
-            "; in Docker raise --shm-size, in Kubernetes use an emptyDir with "
-            "medium: Memory"
+            "; place DIR elsewhere, raise Docker's --shm-size, or mount a Kubernetes "
+            "emptyDir with medium: Memory"
             if system == "linux"
             else ""
         )
         yield (
-            f"{_PROBLEM}segments: {place} has {free >> 20} MiB free, less than one "
-            f"{need >> 20} MiB segment, and a call's inputs and outputs share DIR"
-            f"{advice}"
+            f"{_PROBLEM}segments: {place} has {room >> 20} MiB free, less than one "
+            f"{DEFAULT_SEGMENT_BYTES >> 20} MiB segment, and a call's inputs and "
+            f"outputs share DIR{advice}"
         )

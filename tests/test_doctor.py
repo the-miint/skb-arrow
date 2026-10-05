@@ -14,12 +14,13 @@ import pytest
 from client import SKB_ARROW
 from test_cli import EXPECTED
 
-from skb_arrow import doctor
+from skb_arrow import doctor, transport
 
 KEYS = ["python", "platform", "dependencies", "numpy", "numba", "threads", "segments"]
 SHARE = "less than one 256 MiB segment, and a call's inputs and outputs share DIR"
 ADVICE = (
-    "; in Docker raise --shm-size, in Kubernetes use an emptyDir with medium: Memory"
+    "; place DIR elsewhere, raise Docker's --shm-size, or mount a Kubernetes emptyDir "
+    "with medium: Memory"
 )
 
 
@@ -53,6 +54,7 @@ def test_a_sound_install_reports_its_facts_and_exits_0(
 ) -> None:
     status, lines = run(capsys, **healthy)
     assert (status, problems(lines)) == (0, [])
+    assert list(tmp_path.iterdir()) == []  # the DIR it made to try, removed
     assert lines[:3] == EXPECTED.splitlines()  # --version's
     assert keys(lines[3:]) == KEYS
     pinned = requires("skb-arrow") or []
@@ -62,7 +64,7 @@ def test_a_sound_install_reports_its_facts_and_exits_0(
         f"python: 3.14.0 {sys.executable} (base {sys.base_prefix})",
         "platform: linux x86_64",
         "dependencies: "
-        + ", ".join(f"{name}=={version(name)}" for name in doctor.COMPUTE)
+        + ", ".join(f"{name}=={version(name)}" for name in sorted(doctor.COMPUTE))
         + f"; {len(pinned) - len(doctor.COMPUTE)} more",
         f"numpy: {numpy.__version__}, BLAS {blas['name']} {blas['version']}",
         f"numba: {numba.__version__}, {config.NUMBA_NUM_THREADS} threads, "
@@ -127,6 +129,18 @@ def test_linux_places_segments_in_shm_whatever_tmpdir_says(
         assert lines[-1].startswith(f"segments: {tmp_path}, ")
 
 
+def test_an_unsupported_system_has_no_placement_and_only_the_platform_problem(
+    capsys: pytest.CaptureFixture[str], healthy: dict[str, Any]
+) -> None:
+    status, lines = run(capsys, **healthy | {"system": "win32", "environ": {}})
+    assert status == 1
+    assert lines[-2] == "segments: no placement on win32"
+    assert problems(lines) == [
+        "problem: platform win32 x86_64 is unsupported: "
+        "skb-arrow runs on linux x86_64 and darwin arm64"
+    ]
+
+
 @pytest.mark.parametrize("tmpdir", [None, ""])
 def test_tmpdir_unset_on_macos_is_a_problem(
     capsys: pytest.CaptureFixture[str], healthy: dict[str, Any], tmpdir: str | None
@@ -144,7 +158,7 @@ def test_tmpdir_unset_on_macos_is_a_problem(
 def test_a_dependency_its_pin_excludes_is_a_problem(
     capsys: pytest.CaptureFixture[str], healthy: dict[str, Any]
 ) -> None:
-    status, lines = run(capsys, **healthy | {"requires": ["numpy==0.0.1"]})
+    status, lines = run(capsys, **healthy | {"pins": ["numpy==0.0.1"]})
     assert status == 1
     assert problems(lines) == [
         f"problem: dependencies: numpy {numpy.__version__} is installed, "
@@ -155,7 +169,7 @@ def test_a_dependency_its_pin_excludes_is_a_problem(
 def test_a_missing_dependency_is_a_problem(
     capsys: pytest.CaptureFixture[str], healthy: dict[str, Any]
 ) -> None:
-    status, lines = run(capsys, **healthy | {"requires": ["no-such-dist==1.0"]})
+    status, lines = run(capsys, **healthy | {"pins": ["no-such-dist==1.0"]})
     assert status == 1
     assert problems(lines) == [
         "problem: dependencies: no-such-dist is not installed, "
@@ -163,13 +177,14 @@ def test_a_missing_dependency_is_a_problem(
     ]
 
 
-def test_dependencies_shows_compute_pins_and_counts_the_rest(
+def test_dependencies_shows_compute_pins_sorted_and_counts_the_rest(
     capsys: pytest.CaptureFixture[str], healthy: dict[str, Any]
 ) -> None:
-    pins = [f"six=={version('six')}", f"numpy=={numpy.__version__}"]
-    status, lines = run(capsys, **healthy | {"requires": pins})
+    numpy_pin, scipy_pin = (f"{n}=={version(n)}" for n in ("numpy", "scipy"))
+    pins = [scipy_pin, f"six=={version('six')}", numpy_pin]
+    status, lines = run(capsys, **healthy | {"pins": pins})
     assert status == 0
-    assert f"dependencies: numpy=={numpy.__version__}; 1 more" in lines
+    assert f"dependencies: {numpy_pin}, {scipy_pin}; 1 more" in lines
 
 
 def test_threads_shows_each_variable_set_or_unset(
@@ -187,43 +202,42 @@ def test_threads_shows_each_variable_set_or_unset(
     ) in lines
 
 
-@pytest.mark.parametrize(("system", "advice"), [("linux", ADVICE), ("darwin", "")])
-def test_less_room_than_a_segment_is_a_problem(
+@pytest.mark.parametrize(
+    ("system", "machine", "advice"),
+    [("linux", "x86_64", ADVICE), ("darwin", "arm64", "")],
+)
+def test_less_room_than_one_default_segment_is_a_problem(
     capsys: pytest.CaptureFixture[str],
     healthy: dict[str, Any],
     tmp_path: Path,
     system: str,
+    machine: str,
     advice: str,
 ) -> None:
-    free = shutil.disk_usage(tmp_path).free
-    inputs = healthy | {
-        "system": system,
-        "machine": "x86_64" if system == "linux" else "arm64",
-    }
-    assert run(capsys, **inputs | {"need": free // 2})[0] == 0
-    status, lines = run(capsys, **inputs | {"need": 2 * free})
+    inputs = healthy | {"system": system, "machine": machine}
+    segment = transport.DEFAULT_SEGMENT_BYTES
+    status, lines = run(capsys, **inputs | {"free": lambda place: segment})
+    assert (status, problems(lines)) == (0, [])  # exactly one segment's room is enough
+    assert lines[-1] == f"segments: {tmp_path}, 256 MiB free"
+    status, lines = run(capsys, **inputs | {"free": lambda place: segment - 1})
     assert status == 1
-    [problem] = problems(lines)
-    assert problem.startswith(f"problem: segments: {tmp_path} has ")
-    assert problem.endswith(
-        f" MiB free, less than one {2 * free >> 20} MiB segment, and a call's inputs "
-        f"and outputs share DIR{advice}"
-    )
+    assert f"segments: {tmp_path}, 255 MiB free" in lines
+    assert problems(lines) == [
+        f"problem: segments: {tmp_path} has 255 MiB free, {SHARE}{advice}"
+    ]
+    assert shutil.disk_usage(tmp_path).free > segment  # so the default measures
 
 
 def test_a_place_no_dir_can_be_created_in_is_a_problem(
     capsys: pytest.CaptureFixture[str], healthy: dict[str, Any], tmp_path: Path
 ) -> None:
-    locked = tmp_path / "locked"
-    locked.mkdir(mode=0o500)
-    try:
-        status, lines = run(capsys, **healthy | {"shm": locked})
-    finally:
-        locked.chmod(0o700)
+    file = tmp_path / "file"  # not a permission: root may write anywhere
+    file.touch()
+    status, lines = run(capsys, **healthy | {"shm": file})
     assert status == 1
-    assert f"segments: {locked}" in lines
+    assert f"segments: {file}" in lines
     assert problems(lines) == [
-        f"problem: segments: no DIR can be created in {locked}: Permission denied"
+        f"problem: segments: no DIR can be created in {file}: Not a directory"
     ]
     status, lines = run(capsys, **healthy | {"shm": tmp_path / "missing"})
     assert status == 1
@@ -233,24 +247,44 @@ def test_a_place_no_dir_can_be_created_in_is_a_problem(
     ]
 
 
-def test_a_check_that_raises_is_a_problem_not_a_traceback() -> None:
-    code = (
-        "import sys\n"
-        "sys.modules['skb_arrow.registry'] = None  # as a broken numba would\n"
-        "from skb_arrow import cli\n"
-        "sys.exit(cli.main(['--doctor']))\n"
-    )
+def broken(setup: str) -> tuple[int, list[str]]:
+    """--doctor's status and lines in a fresh process, `setup` run first."""
+    call = "from skb_arrow import cli\nsys.exit(cli.main(['--doctor']))"
+    code = f"import sys\n{setup}\n{call}"
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=60
     )
-    assert result.returncode == 1
     assert "Traceback" not in result.stdout + result.stderr
-    lines = result.stdout.splitlines()
-    assert (
+    return result.returncode, result.stdout.splitlines()
+
+
+def test_a_registry_failing_to_import_is_one_problem_and_the_rest_reports() -> None:
+    status, lines = broken("sys.modules['skb_arrow.registry'] = None")
+    assert status == 1
+    halted = [line for line in problems(lines) if "halted" in line]
+    assert halted == [
         "problem: version: ModuleNotFoundError: import of skb_arrow.registry halted; "
         "None in sys.modules"
+    ]
+    assert keys(lines) == [f"skb-arrow {version('skb-arrow')}", *KEYS]
+
+
+def test_a_problem_is_one_line_though_its_error_spans_several() -> None:
+    # numba's own message when llvmlite doesn't match it.
+    status, lines = broken(
+        "class Broken:\n"
+        "    def find_spec(self, name, path=None, target=None):\n"
+        "        if name == 'numba':\n"
+        "            raise ImportError('Numba requires llvmlite 0.50.\\n'\n"
+        "                              'Installed version is 0.49.')\n"
+        "sys.meta_path.insert(0, Broken())"
+    )
+    assert status == 1
+    assert (
+        "problem: numba: ImportError: Numba requires llvmlite 0.50. "
+        "Installed version is 0.49."
     ) in lines
-    assert keys(lines)[:6] == KEYS[:6]  # the other checks still report
+    assert keys(lines)[3:] == [k for k in KEYS if k != "numba"]
 
 
 def test_the_installed_console_script_reports_numba_as_configured() -> None:

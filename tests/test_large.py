@@ -13,12 +13,12 @@ import pytest
 from client import INIT, PLACE, SKB_ARROW, Client
 from pyarrow import ipc
 
-from skb_arrow import protocol, transport
+from skb_arrow import transport
 
 pytestmark = pytest.mark.large
 
 KiB, MiB, GiB = 1 << 10, 1 << 20, 1 << 30
-CAP = protocol.DEFAULT_SEGMENT_BYTES
+CAP = transport.DEFAULT_SEGMENT_BYTES
 SCHEMA = pa.schema({"n": pa.int64()})
 
 

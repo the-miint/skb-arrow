@@ -28,7 +28,7 @@ touches transport or JSON; it raises skb_arrow error classes for faults it antic
 | `host.py` | `reserve`: the channel, the stderr drainer, and the fork hook, before heavy imports; `serve`: DIR checks, the response watch, loop, cleanup |
 | `errors.py` | error classes (raised in every layer), `classify`, `collect_warnings` |
 | `protocol.py` | `PROTOCOL_VERSION`, `Session`, `handle`: one request line → one response line |
-| `transport.py` | segment `read`, `write`, `dispose`, name checks |
+| `transport.py` | segment `read`, `write`, `dispose`, name checks, the default segment size |
 | `registry.py` | `Capability`, `CAPABILITIES`, `validate` |
 | `capabilities/echo.py` | returns its input |
 | `capabilities/_tables.py` | input-table contracts shared by capabilities |

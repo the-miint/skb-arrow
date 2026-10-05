@@ -9,6 +9,8 @@ from pyarrow import ipc
 
 from skb_arrow.errors import HostIncompatible, InvalidInput
 
+# init's segment_bytes when it names none (DESIGN §3.15).
+DEFAULT_SEGMENT_BYTES = 256 << 20
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}")
 _OUTPUT = "skbout-"
 
