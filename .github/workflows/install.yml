@@ -35,36 +35,17 @@ jobs:
         with:
           enable-cache: false
       # Outside any checkout, so no project file or .python-version steers uv.
-      - name: Install
+      - name: Install as the README says, wheels only
         working-directory: ${{ runner.temp }}
         shell: bash
         run: |
-          flags=()
           if [ "$INDEX" = testpypi ]; then
             # PyPI first, so only what PyPI lacks (skb-arrow) comes from TestPyPI.
-            flags=(--index https://pypi.org/simple/ --default-index https://test.pypi.org/simple/
-              --index-strategy unsafe-first-match)
-          fi
-
-          # Whether the bare command works here too (DESIGN §5 M5 "Done when"): recorded,
-          # never failing the job. Its own tool directory, apart from the one tested.
-          bare="$RUNNER_TEMP/bare"
-          mkdir -p "$bare"
-          if UV_TOOL_DIR="$bare/tools" UV_TOOL_BIN_DIR="$bare/bin" \
-            uv tool install "${flags[@]}" "$SPEC" > "$bare/log" 2>&1 \
-            && "$bare/bin/skb-arrow" --version >> "$bare/log" 2>&1; then
-            outcome=works
-          else
-            outcome=fails
-          fi
-          {
-            echo "### \`uv tool install $SPEC\` on ${{ matrix.os }}: $outcome"
-            echo '```'
-            tail -n 25 "$bare/log"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          # As the README says, and wheels only.
+            printf '%s\n' --index https://pypi.org/simple/ \
+              --default-index https://test.pypi.org/simple/ --index-strategy unsafe-first-match
+          fi > "$RUNNER_TEMP/index-flags" # one per line, for the bare install too
+          flags=()
+          while IFS= read -r flag; do flags+=("$flag"); done < "$RUNNER_TEMP/index-flags"
           uv tool install "${flags[@]}" --no-build --managed-python --python 3.14 "$SPEC"
           bin="$(uv tool dir --bin)/skb-arrow"
           "$bin" --version
@@ -74,6 +55,34 @@ jobs:
         with:
           ref: v${{ inputs.version }}
           persist-credentials: false
-      # Every test that runs a host runs the installed one (tests/client.py).
+      # Every test that runs skb-arrow runs the installed one (tests/client.py); the rest
+      # test the tag's source.
       - name: Tagged tests against the installed binary
         run: uv run --locked pytest
+      # Whether the bare command works here too (DESIGN §5 M5 "Done when"). Recorded, never
+      # failing the job; a heading with no outcome under it ran out of time (a source build).
+      - name: Install bare
+        continue-on-error: true
+        timeout-minutes: 10
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          flags=()
+          while IFS= read -r flag; do flags+=("$flag"); done < "$RUNNER_TEMP/index-flags"
+          bare="$RUNNER_TEMP/bare"
+          mkdir -p "$bare"
+          shown=$(printf '%s ' uv tool install "${flags[@]}" "$SPEC")
+          echo "### Bare install on ${{ matrix.os }}: \`${shown% }\`" >> "$GITHUB_STEP_SUMMARY"
+          if UV_TOOL_DIR="$bare/tools" UV_TOOL_BIN_DIR="$bare/bin" \
+            uv tool install "${flags[@]}" "$SPEC" > "$bare/log" 2>&1 \
+            && "$bare/bin/skb-arrow" --doctor >> "$bare/log" 2>&1; then
+            outcome="works: it installed, and --doctor exited 0"
+          else
+            outcome="fails"
+          fi
+          {
+            echo "Outcome: $outcome"
+            echo '```'
+            tail -n 25 "$bare/log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

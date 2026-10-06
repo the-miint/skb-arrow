@@ -30,7 +30,7 @@ jobs:
       - run: .githooks/pre-commit
       - run: uv build
       # As PyPI renders it: the README is its long description.
-      - run: uvx --from twine==7.0.0 twine check --strict dist/*
+      - run: uv run --locked --only-group release twine check --strict dist/*
       # Wheels only, uncached: a wheel built from an sdist earlier would hide one missing.
       - run: uv tool install --no-build --no-cache --managed-python --python 3.14 dist/*.whl
       - name: Installed wheel matches source

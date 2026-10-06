@@ -13,11 +13,11 @@ Python 3.14 only. Every dependency installs from a wheel, and each is pinned exa
 answer is reproducible per skb-arrow version.
 
 ## Install
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) 0.6.8 or later, then:
 
 ```
 uv tool install --managed-python --python 3.14 skb-arrow
-uv tool update-shell   # if uv says its tool directory isn't on PATH
+uv tool update-shell   # if uv says its tool directory isn't on PATH; then open a new shell
 skb-arrow --doctor
 ```
 
@@ -42,11 +42,15 @@ protocol version, and each capability with its schema version.
 - [Errors](https://github.com/the-miint/skb-arrow/blob/main/docs/errors.md): error kinds and
   warnings.
 
+These follow `main`. A release's own are under its tag:
+`https://github.com/the-miint/skb-arrow/tree/v<version>/docs`.
+
 ## Threads
 Each is read from the environment, and `--doctor` shows it:
 - `NUMBA_NUM_THREADS`: numba's kernels (`mantel`); every core by default. Answers don't depend
   on it.
-- `OPENBLAS_NUM_THREADS` on Linux, `VECLIB_MAXIMUM_THREADS` on macOS: numpy's and scipy's BLAS.
+- `OPENBLAS_NUM_THREADS` for OpenBLAS (Linux, and macOS 12 and 13), `VECLIB_MAXIMUM_THREADS`
+  for Accelerate (macOS 14 and later): numpy's and scipy's BLAS, which `--doctor` names.
   Answers are bit for bit on one machine at one count; across them, to floating-point
   tolerance.
 - `OMP_NUM_THREADS`: OpenMP's.

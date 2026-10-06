@@ -87,9 +87,14 @@ def test_python_other_than_3_14_is_a_problem(
     assert status == 1
     assert problems(lines) == [
         f"problem: python {shown} is unsupported: "
-        "uv tool install --python 3.14 skb-arrow"
+        "uv tool install --managed-python --python 3.14 skb-arrow"
     ]
     assert lines[-1] == problems(lines)[0]  # after every fact, though found second
+
+
+def test_the_install_it_advises_is_the_readmes() -> None:
+    readme = (Path(__file__).parents[1] / "README.md").read_text()
+    assert f"\n{doctor.INSTALL}\n" in readme
 
 
 @pytest.mark.parametrize(

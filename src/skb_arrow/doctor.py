@@ -29,7 +29,7 @@ THREADS = (
     "OPENBLAS_NUM_THREADS",
     "VECLIB_MAXIMUM_THREADS",
 )
-_INSTALL = "uv tool install --python 3.14 skb-arrow"
+INSTALL = "uv tool install --managed-python --python 3.14 skb-arrow"  # the README's
 _PROBLEM = "problem: "
 
 
@@ -89,7 +89,7 @@ def _python(version_info: tuple[int, ...]) -> Iterator[str]:
     shown = ".".join(map(str, version_info))
     yield f"python: {shown} {sys.executable} (base {sys.base_prefix})"
     if version_info[:2] != (3, 14):
-        yield f"{_PROBLEM}python {shown} is unsupported: {_INSTALL}"
+        yield f"{_PROBLEM}python {shown} is unsupported: {INSTALL}"
 
 
 def _platform(system: str, machine: str) -> Iterator[str]:

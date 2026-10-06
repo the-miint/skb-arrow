@@ -59,10 +59,16 @@ skb-arrow = "skb_arrow.cli:main"
 
 [dependency-groups]
 dev = ["pytest==9.1.1", "ruff==0.16.8", "mypy==2.3.1"]
+# What CI and release.yml check a build with; packaging comes with twine.
+release = ["twine==7.0.0"]
 
 [tool.uv]
 # The supported platforms' systems (DESIGN §3.9).
 environments = ["sys_platform == 'linux'", "sys_platform == 'darwin'"]
+
+[tool.hatch.build.targets.sdist]
+# A release can't be edited: the sdist holds the package, its tests and docs, no tooling.
+include = ["/src", "/tests", "/docs", "/README.md", "/LICENSE", "/uv.lock"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "B", "UP", "N", "C4", "SIM"]

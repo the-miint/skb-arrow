@@ -240,7 +240,8 @@ it reads only a dependency's lower bound, by design, and measured with uv 0.10, 
 wheel installs on 3.14. On 3.15 an install goes on to pyarrow, scikit-bio, h5py, and
 biom-format, which have no cp315 wheels (2026-10), and must build them from source.
 `uv tool install` also picks an interpreter without reading `requires-python` (uv#14110), so
-installs name `--python 3.14`.
+installs name `--python 3.14`, and `--managed-python`: in M5's CI, macOS otherwise took
+Homebrew's 3.14.
 
 ### 3.10 Result shapes: unify a family into one long table
 

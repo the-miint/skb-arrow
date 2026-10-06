@@ -3,6 +3,8 @@
 # CI runs this file too; keep it the full gate.
 # Enable with:  git config core.hooksPath .githooks
 set -euo pipefail
+# The gate tests this checkout's host; install.yml sets it to a published one's.
+unset SKB_ARROW_BIN
 
 echo "pre-commit: ruff check"
 uv run --locked ruff check .
