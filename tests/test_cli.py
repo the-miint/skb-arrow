@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import tomllib
@@ -47,6 +48,25 @@ def test_installed_console_script_runs_main() -> None:
     )
     assert result.returncode == 0
     assert result.stdout == EXPECTED
+
+
+@pytest.mark.parametrize("named", [None, "/elsewhere/bin/skb-arrow"])
+def test_skb_arrow_bin_names_the_host_under_test(named: str | None) -> None:
+    # install.yml runs this suite against a published release's binary.
+    environ = {k: v for k, v in os.environ.items() if k != "SKB_ARROW_BIN"}
+    if named is not None:
+        environ["SKB_ARROW_BIN"] = named
+    result = subprocess.run(
+        [sys.executable, "-c", "import client; print(client.SKB_ARROW)"],
+        cwd=Path(__file__).parent,
+        env=environ,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    venv = str(Path(sys.executable).parent / "skb-arrow")
+    assert result.stdout == f"{[named or venv]}\n"
 
 
 def test_importing_the_cli_and_host_loads_nothing_heavy() -> None:

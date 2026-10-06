@@ -23,10 +23,38 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match project version $version"
             exit 1
           fi
+      # A prerelease goes to TestPyPI, a release to PyPI: the checkbox must say which.
+      - name: Prerelease checkbox matches the version
+        env:
+          CHECKED: ${{ github.event.release.prerelease }}
+        run: |
+          code='import sys; from packaging.version import Version as V; print(str(V(sys.argv[1]).is_prerelease).lower())'
+          is=$(uv run --no-project --with packaging==26.3 python -c "$code" "$(uv version --short)")
+          if [ "$is" != "$CHECKED" ]; then
+            echo "::error::prerelease checkbox is $CHECKED, but the version's prerelease is $is"
+            exit 1
+          fi
 
   ci:
     needs: tag
     uses: ./.github/workflows/ci.yml
+
+  testpypi:
+    needs: ci
+    if: ${{ github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: testpypi
+    permissions:
+      id-token: write # TestPyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
 
   publish:
     needs: ci

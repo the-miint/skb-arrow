@@ -1,0 +1,79 @@
+name: Install
+
+# A published release installed as the README says, from wheels with nothing cached; then the
+# tagged tests run against its binary.
+on:
+  workflow_dispatch:
+    inputs:
+      index:
+        description: Where the release was published
+        type: choice
+        options: [pypi, testpypi]
+        default: pypi
+      version:
+        description: The version published, e.g. 0.1.0rc1
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      UV_NO_CACHE: "1"
+      SPEC: skb-arrow==${{ inputs.version }}
+      INDEX: ${{ inputs.index }}
+    steps:
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+      # Outside any checkout, so no project file or .python-version steers uv.
+      - name: Install
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          flags=()
+          if [ "$INDEX" = testpypi ]; then
+            # PyPI first, so only what PyPI lacks (skb-arrow) comes from TestPyPI.
+            flags=(--index https://pypi.org/simple/ --default-index https://test.pypi.org/simple/
+              --index-strategy unsafe-first-match)
+          fi
+
+          # Whether the bare command works here too (DESIGN §5 M5 "Done when"): recorded,
+          # never failing the job. Its own tool directory, apart from the one tested.
+          bare="$RUNNER_TEMP/bare"
+          mkdir -p "$bare"
+          if UV_TOOL_DIR="$bare/tools" UV_TOOL_BIN_DIR="$bare/bin" \
+            uv tool install "${flags[@]}" "$SPEC" > "$bare/log" 2>&1 \
+            && "$bare/bin/skb-arrow" --version >> "$bare/log" 2>&1; then
+            outcome=works
+          else
+            outcome=fails
+          fi
+          {
+            echo "### \`uv tool install $SPEC\` on ${{ matrix.os }}: $outcome"
+            echo '```'
+            tail -n 25 "$bare/log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # As the README says, and wheels only.
+          uv tool install "${flags[@]}" --no-build --managed-python --python 3.14 "$SPEC"
+          bin="$(uv tool dir --bin)/skb-arrow"
+          "$bin" --version
+          "$bin" --doctor
+          echo "SKB_ARROW_BIN=$bin" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: v${{ inputs.version }}
+          persist-credentials: false
+      # Every test that runs a host runs the installed one (tests/client.py).
+      - name: Tagged tests against the installed binary
+        run: uv run --locked pytest

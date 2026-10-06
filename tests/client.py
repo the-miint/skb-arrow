@@ -18,10 +18,13 @@ from pyarrow import ipc
 from skb_arrow import transport
 
 FIXTURE = [sys.executable, str(Path(__file__).with_name("fixture_host.py"))]
-SKB_ARROW = [str(Path(sys.executable).parent / "skb-arrow")]
+# This venv's host, unless SKB_ARROW_BIN names another (install.yml: a published one's).
+SKB_ARROW = [
+    os.environ.get("SKB_ARROW_BIN") or str(Path(sys.executable).parent / "skb-arrow")
+]
 INIT = {"type": "init", "protocol_version": 1}
-# Where a caller places DIR (docs/transport.md#session-directory).
-# As docs/transport.md places DIR: $TMPDIR itself on macOS, unset a fault (--doctor).
+# Where a caller places DIR (docs/transport.md#session-directory): on macOS, $TMPDIR
+# itself; unset, it's a fault (--doctor).
 PLACE = "/dev/shm" if sys.platform == "linux" else os.environ["TMPDIR"]
 
 

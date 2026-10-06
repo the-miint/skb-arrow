@@ -10,6 +10,14 @@ readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = "==3.14.*"
 authors = [{ name = "Daniel McDonald", email = "damcdonald@ucsd.edu" }]
+keywords = ["scikit-bio", "apache-arrow", "bioinformatics", "microbiome"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 # Every runtime dependency, exactly (docs/capabilities.md#versioning).
 dependencies = [
     "array-api-compat==1.15.0",
@@ -40,6 +48,11 @@ dependencies = [
     "urllib3==2.8.0",
     "wrapt==2.5.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/the-miint/skb-arrow"
+Documentation = "https://github.com/the-miint/skb-arrow/tree/main/docs"
+Issues = "https://github.com/the-miint/skb-arrow/issues"
 
 [project.scripts]
 skb-arrow = "skb_arrow.cli:main"
