@@ -59,8 +59,10 @@ jobs:
       # test the tag's source.
       - name: Tagged tests against the installed binary
         run: uv run --locked pytest
-      # Whether the bare command works here too (DESIGN §5 M5 "Done when"). Recorded, never
-      # failing the job; a heading with no outcome under it ran out of time (a source build).
+      # Whether the bare command works here too (DESIGN §5 M5 "Done when"). Recorded in the
+      # summary and the log, never failing the job; a heading with no outcome under it ran out
+      # of time (a source build). Its own Python directory hides the 3.14 uv downloaded above,
+      # as on a clean machine; the runner's own Pythons stay.
       - name: Install bare
         continue-on-error: true
         timeout-minutes: 10
@@ -72,8 +74,9 @@ jobs:
           bare="$RUNNER_TEMP/bare"
           mkdir -p "$bare"
           shown=$(printf '%s ' uv tool install "${flags[@]}" "$SPEC")
-          echo "### Bare install on ${{ matrix.os }}: \`${shown% }\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Bare install on ${{ matrix.os }}: \`${shown% }\`" | tee -a "$GITHUB_STEP_SUMMARY"
           if UV_TOOL_DIR="$bare/tools" UV_TOOL_BIN_DIR="$bare/bin" \
+            UV_PYTHON_INSTALL_DIR="$bare/python" \
             uv tool install "${flags[@]}" "$SPEC" > "$bare/log" 2>&1 \
             && "$bare/bin/skb-arrow" --doctor >> "$bare/log" 2>&1; then
             outcome="works: it installed, and --doctor exited 0"
@@ -85,4 +88,4 @@ jobs:
             echo '```'
             tail -n 25 "$bare/log"
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
